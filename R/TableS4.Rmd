@@ -1,0 +1,431 @@
+---
+title: "2 steps Normalisation : Example"
+output:
+  html_document:
+    keep_md: no
+---
+
+```{r DataPrep, include=FALSE, eval=TRUE, warning=FALSE, message=FALSE}
+
+########################################################################
+######################## DATA PREPARATION ##############################
+########################################################################
+
+###Loading the packages
+library(plyr)
+library(tidyverse)
+library(reshape2)
+library(psych)
+library(MASS)
+library(scales)
+library(knitr)
+
+#####################################
+### Data loading and formatting  ###
+####################################
+
+### intSites <- read.csv('../Data/intSites.mergedSamples.collapsed.csv', header = TRUE)
+intSites <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
+
+for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
+
+
+#
+# Read in the cell sorting cross over reports which are stored in a single file with records separated with '#%'.
+# The counts table is identifiable by the key word COUNTS. 
+#
+
+options(stringsAsFactors = FALSE)
+crossOverReports <- readChar('../data/crossOverReports.tsv', file.info('../data/crossOverReports.tsv')$size)
+crossOverReports <- unlist(strsplit(crossOverReports, '#%'))
+crossOverReports <- unlist(lapply(crossOverReports, function(x){
+  source     <- ifelse(grepl('#source:', x), sub('\\t+$', '', str_match(x, '#source:\\s+(.+)')[2]), '')
+  cellCounts <- as.numeric(str_match_all(str_match(x, 'initialCellCounts,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  psort <- as.numeric(str_match_all(str_match(x, 'pB_postsort,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  count_psort <-as.numeric(str_match_all(str_match(x, 'postsortCount,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  VCN <-as.numeric(str_match_all(str_match(x, 'VCN,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  DNA <-as.numeric(str_match_all(str_match(x, 'DNA,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  patient    <- str_match(x, '#(\\S+)')[2]
+  timePoint  <- str_match(x, '#\\S+\\s+(\\S+)')[2]
+  t          <- gsub('\\t+\\n', '\n', substr(x, regexpr('COUNTS', x)+7, nchar(x)))
+  m          <- read.table(tc <- textConnection(t), header = TRUE, fill = TRUE, check.names = FALSE, sep='\t'); close(tc); 
+  if(nrow(m) < 5 | length(m) < 5) return(NA)
+  m <- m[1:5, 1:5]
+  r <- list()
+  r[[paste(patient, timePoint, source, sep='|')]] <- list(
+    patient   = str_match(x, '#(\\S+)\\s+(\\S+)')[2],
+    timePoint = str_match(x, '#(\\S+)\\s+(\\S+)')[3],
+    source    = source,
+    t         = t,
+    table     = m,
+    cellCount = cellCounts,
+    psort     = psort,
+    count_psort = count_psort,
+    VCN = VCN,
+    DNA = DNA)
+  
+  message('Read in ', names(r))
+  r
+}), recursive = FALSE)
+
+crossOverReports <- crossOverReports[sapply(crossOverReports, is.list)]
+
+#
+# Subset the resulting list to include only those reports which will be used in the study.
+#
+
+samples <- c('WAS4|m12|Blood','WAS4|m48|Blood',
+             'WAS5|m55|Blood',
+             'bS/bS|m24|Blood',
+             'b0/bE|m48|Blood')
+
+if(! all(samples %in% names(crossOverReports))) stop('All the requested crossover tables were not found.')
+crossOverReports <- crossOverReports[samples]  
+
+
+ ### proportion for each cell type
+ prop_HD=c(0.2,0.2,0.2,0.2,0.2)
+
+#
+# For each cross over report entry, create a subset of the data, convert it into a matrix like structure, 
+# and apply a series of abundance corrections in the same manner as developed by Six and co. These corrections 
+# are returned to the crossover list of lists object. 
+# Column headers are reorganized to emulate Six and co's intput to their provided functions.
+#
+
+
+# Create a key to be used to update corrected abundances.
+
+intSites$timePoint=tolower(intSites$timePoint)
+intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSites$timePoint)
+
+
+ # Put the data in a wide format count table.
+  
+  assign(paste('liste_intSites_new_sup',0,sep=''),lapply(crossOverReports,function(x){  
+   
+     if(x$source == 'BoneMarrow') names(x$table) <- paste0('BM_', names(x$table))
+    
+    # Subset the intSite data to include only sites from a specific cell type and time point.
+    i <- which(intSites$patient==x$patient & intSites$timePoint==x$timePoint & 
+                 toupper(intSites$cellType) %in% toupper(names(x$table)))
+    d <- intSites[i,]
+    
+    if(nrow(d) == 0) stop(paste0(x$patient, ' / ', x$timePoint, ' could not be found in the intSite data.'))
+    
+    message('Cell types in retrieved data subset(', x$patient, ' - ', x$timePoint, '): ',
+            paste0(unique(d$celltype), collapse=', '))
+    
+    # Replace NA gene names with 'NONE' in case Correction_CutData_new() is sensitive to NA.
+    if(length(which(is.na(d$nearestFeature))) > 0) d[which(is.na(d$nearestFeature)),]$nearestFeature <- 'NONE'
+    
+    # Reorganize the data to create an intSite / cell count table.
+    d2 <- reshape2::dcast(d, posid ~ cellType, value.var='estAbund', fun.aggregate=function(x){x[1]}, fill=0)  
+    
+    # Add missing cell types.
+    d2[names(x$table)[! toupper(names(x$table)) %in% toupper(names(d2))]] <- 0
+    
+    # Add nearest gene column.
+    d2$gene <- intSites[match(d2$posid, intSites$posid),]$nearestFeature  
+    
+      # Add inFeature column.
+    d2$inFeature <- intSites[match(d2$posid, intSites$posid),]$inFeature  
+    
+    # Reorganize the column headers to match Correction_CutData_new() input structure.
+    d2 <- d2[,c(1,grep('gene',   names(d2), ignore.case = TRUE),
+                 grep('BCELL',  names(d2), ignore.case = TRUE),
+                 grep('MONO',   names(d2), ignore.case = TRUE),
+                 grep('GRANULO', names(d2), ignore.case = TRUE),
+                 grep('NKCELL', names(d2), ignore.case = TRUE),
+                 grep('TCELL',  names(d2), ignore.case = TRUE),
+                 grep('inFeature',  names(d2), ignore.case = TRUE)
+                )]
+    
+    # Create a cell count column.
+    d2$cellCount <-  apply(d2, 1, function(x){ sum(as.integer(x[3:7])) })
+    
+    # Rename the input columns for Correction_CutData_new().
+    names(d2)=c("integrationSite", "gene", "Bcells", "Monocytes", "Neutrophils", "NKcells", "Tcells","inFeature", "cellCount") 
+    
+    d2$integrationSite=as.character(d2$integrationSite)
+    d2$gene=as.character(d2$gene)
+    d2$key <- paste(c(x$patient, x$timePoint,x$source),collapse = "|") 
+    
+    intSites_new=d2
+  
+    return(intSites_new)
+    } ))
+  
+
+  # Reunite all the data sup0 (without threshold) in a unique dataframe.
+  intSites_new_concat_sup0=do.call(rbind,liste_intSites_new_sup0)
+  
+# ------------------------------------------------------------------- #
+  
+  #########################
+  ## Apply the threshold ##
+  #########################
+  
+### Get the IS that had 6 or more cells for a cell type at the tmpt.
+  
+  list_intSites_th_Initial=list()
+
+  for(P in samples){
+  
+  pat=P
+  liste=liste_intSites_new_sup0[pat]
+  
+  #Find the IS matching the criteria by patient/tmpt.
+  
+  IS=do.call(rbind, lapply(pat, function(s){
+    L=liste[[s]]
+    L$integrationSite=as.character(L$integrationSite)
+    IS=subset(L,L$Bcells >=6| L$Monocytes >=6 | L$Neutrophils >=6 | L$NKcells >=6 | L$Tcells >=6)
+    print(s)
+    print(nrow(IS))
+    IS
+  }))
+  
+  IS_to_keep=unique(IS$integrationSite)
+  
+  #Apply the filter for the tmpt
+  list_intSites_th_Initial[pat]=lapply(liste, function(x) subset(x,integrationSite%in%IS_to_keep))
+  
+  }
+  
+
+  ## Agregate the values in a unique data.frame
+  intSites_threshold_Initial=do.call(rbind,list_intSites_th_Initial)
+  
+  
+  # ------------------------------------------------------------------- #
+
+  #########################
+  ## Apply the Correction ##
+  #########################
+  
+ #load the correction function.  
+ source('./AbundanceCorrection_2steps_Normalization_Steps.R')
+  
+ list_intSites_th_Corrected=lapply(crossOverReports,function(cross){  
+  
+  if(cross$source == 'BoneMarrow') names(cross$table) <- paste0('BM_', names(cross$table))
+    
+    # Subset the intSites_threshold_Initial data to include only sites from a specific cell type and time point.
+    i <- which(intSites_threshold_Initial$key == paste(c(cross$patient, cross$timePoint, cross$source),collapse = "|")) 
+    df <- intSites_threshold_Initial[i,]
+    
+    print(unique(df$key))
+    
+    #Use the correction function.
+    
+    Correction=Correction_2steps_Normalization(x=cross,d2=df)
+    
+    data_corrected_C=Correction$data_correctedC
+    data_corrected_final=Correction$data_corrected_final
+
+    
+    # Rename the returned data frame to match the cell types in the intSites data frame.
+    nc <- c("integrationSite", "gene", "Bcells_C_corrected", "Monocytes_C_corrected", "Neutrophils_C_corrected",
+           "NKcells_C_corrected", "Tcells_C_corrected")
+    names(data_corrected_C) <- nc
+    data_corrected_C = 
+      mutate(data_corrected_C,
+      cellCount_C_corrected=rowSums(data_corrected_C [,grepl(names(data_corrected_C ),pattern='_C_corrected$')]))
+    
+  
+    # Rename the returned data frame to match the cell types in the intSites data frame.
+    n <- c("integrationSite", "gene", "Bcells_corrected", "Monocytes_corrected", "Neutrophils_corrected",
+           "NKcells_corrected", "Tcells_corrected")
+    names(data_corrected_final) <- n
+    data_corrected_final = 
+      mutate(data_corrected_final,
+             cellCount_corrected=rowSums(data_corrected_final[,grepl(names(data_corrected_final),pattern='s_corrected$')]))
+  
+    data_corrected_allstep=merge(data_corrected_C,data_corrected_final,by=c('integrationSite','gene'))
+  
+    intSites_new =dplyr::right_join(df,data_corrected_allstep,by=c('integrationSite','gene') )
+    
+    # Add proportions.
+    prop = (intSites_new[,grepl("s_corrected",names(intSites_new))])/
+      rowSums((intSites_new[,grepl("_corrected",names(intSites_new))]))
+    names(prop) = c("Bcells_corrected_prop", "Monocytes_corrected_prop", "Neutrophils_corrected_prop",
+                    "NKcells_corrected_prop", "Tcells_corrected_prop")
+    intSites_new = cbind(intSites_new,prop)
+    
+    return(intSites_new)
+
+  } ) 
+
+ intSites_threshold=do.call(rbind,list_intSites_th_Corrected)
+ 
+ # ------------------------------------------------------------------- #
+ 
+ 
+  ##############################################
+  ### Apply the clustering to the patient   ### 
+  ##############################################
+
+ #load the tranformation and kmeans function.
+  source('./Kmeans_clustering.R')
+
+  #kmeans with correction
+
+  liste_kmeans_results=list()
+  for(s in samples){
+  data_for_kmeans=subset(intSites_threshold,key==s)
+  liste_kmeans_results[[s]]=KmeansClustering(data_for_kmeans,HD=prop_HD)
+  }
+
+ 
+```
+
+```{r,echo=FALSE}
+
+## Function
+
+Show_DF_Example=function(p,IS_sel){
+
+df=liste_kmeans_results[[p]]$intSites_withKmeans
+
+# Select and reorder some columns of the data frame
+ex=df[,!grepl(pattern = 'prop|logCLR|er_num|inFeature',colnames(df)) ]
+rownames(ex)<-NULL
+
+cells_order=c('Neutrophils' ,'Monocytes', 'Bcells' ,'NKcells' ,'Tcells', 'cellCount')
+ex=ex[,c('key', 'integrationSite',  'gene', 'cluster', cells_order,
+                   paste0(cells_order,'_C_corrected'),paste0(cells_order,'_corrected') )]
+
+# Get the IS we want to show
+ex_IS=subset(ex,integrationSite %in% IS_sel)
+ex_IS=arrange(ex_IS,desc(cellCount))
+ex_IS$tmpt=paste0('m',gsub("|\\|B.*|.*m", "", ex_IS$key))
+ex_IS$key=gsub('\\|.*','',ex_IS$key)
+
+#Get the other IS
+Other_IS=subset(ex,!(integrationSite %in% IS_sel))
+
+# First column of the example dataframe( Character values)
+Data=rbind(ex_IS[,c("key","tmpt","integrationSite",'gene','cluster')],
+           c(gsub('\\|.*','',p),paste0('m',gsub("|\\|B.*|.*m", "", p)),'other IS',nrow(Other_IS),'.'),
+           c(gsub('\\|.*','',p),paste0('m',gsub("|\\|B.*|.*m", "", p)),'.','.','p(dataset)'))
+
+# Sum of the numerical values for the other IS
+num=subset(ex_IS, select=-c(integrationSite, gene, key,tmpt,cluster))
+values=round(rbind(num,colSums(subset(Other_IS, select=-c(integrationSite, gene, cluster,key)))),3)
+
+
+  # Calcul of the proportion for each type of data
+  p=c()
+  steps=cbind(cells_order, paste0(cells_order,'_C_corrected'),paste0(cells_order,'_corrected'))
+
+  for( v in 1:3){
+   V=steps[,v]
+   init=values[,V]
+   p=c(p,round(colSums(init)/sum(init[,6]),3))
+  }
+
+  #Add those values in the example dataframe.
+  Data[,6:(6+ncol(num)-1)]=rbind(values,p)
+  rownames(Data)<-NULL
+
+  #Rename the columns.
+  colnames(Data)<-c("Patient",'tmpt','IS','Gene','Cluster',rep(c('G','M','B','K','T','IS Abund.'),3))
+
+  return(Data) }
+
+## Function Call
+
+#WAS4 m12
+p=Show_DF_Example(p='WAS4|m12|Blood',
+                  IS_sel=c('chr12+54311322',
+                           'chr9-136685086',
+                           'chr1-8688776',
+                           'chr17+7199073',
+                           'chr11-119266286',
+                           'chr7+129009460',
+                           'chr1+35350911',
+                           'chr14-105873241',
+                           'chr15-41070088',
+                           'chr14+99998262'))
+
+#WAS4 m48
+a=Show_DF_Example(p='WAS4|m48|Blood',
+                  IS_sel=c('chr12+54311322',
+                           'chr9-136685086',
+                           'chr1-8688776',
+                           'chr17+7199073',
+                           'chr11-119266286',
+                           'chr1+35350911',
+                           'chr14-105873241',
+                           'chr14+99998262'))
+
+#WAS5 m55
+b=Show_DF_Example(p='WAS5|m55|Blood',
+                  IS_sel=c('chr17-2621340',
+                           'chr7+39671397',
+                           'chr1-93533877',
+                           'chr1+28343713',
+                           'chr12-50933180',
+                           'chr19+31945791',
+                           'chr19+49670844',
+                           'chr1+167426678'))
+
+#bS/bS
+c=Show_DF_Example(p='bS/bS|m24|Blood',
+                  IS_sel=c('chr12-68443305',
+                           'chr14-35296845',
+                           'chr11+65297978',
+                           'chr17+79963585',
+                           'chr11+118481417',
+                           'chr3-47073750',
+                           'chr15-73611315',
+                           'chr11+65297978',
+                           'chr1-167306067',
+                           'chr17+73569011'))
+
+#b0/bE m48
+d=Show_DF_Example(p='b0/bE|m48|Blood',
+                  IS_sel=c('chr12+65958913',
+                           'chr15+55887274',
+                           'chr17+78006339',
+                           'chr1-35183180',
+                           'chr1+39313044',
+                           'chr17-31350767',
+                           'chr7-30324637',
+                           'chrX+155080585',
+                           'chr19+11314390'))
+
+## Prepare and print the table
+Data_allpat=rbind(p,a,b,c,d)
+
+library(kableExtra)
+
+kable(Data_allpat,format='html', align = "c")%>% 
+  kable_styling(c("striped", "bordered" ,"condensed"),full_width = F,font_size = 8) %>%
+  add_header_above(c(" "," "," "," ", " ","Initial" = 6, "Step 1" = 6,"Step2"= 6)) %>% 
+  column_spec(c(1:5,10,16,22), bold=T) %>% 
+  row_spec(c(9,19,29,39,49), italic=T) %>%  
+  row_spec(c(10,20,30,40,50), bold=T) %>%  
+  collapse_rows(columns = c(1,2))
+
+
+
+### show mini example for was4 m48
+
+#WAS4 m48
+ex=Show_DF_Example(p='WAS4|m48|Blood',
+                IS_sel=c('chr12+54311322',
+                         'chr1+35350911',
+                         'chr14-105873241'))
+
+
+kable(ex,format='html', align = "c")%>% 
+  kable_styling(c("striped", "bordered" ,"condensed"),full_width = F,font_size = 8) %>%
+  add_header_above(c(" "," "," "," ", " ","Initial" = 6, "Step 1" = 6,"Step2"= 6)) %>% 
+  column_spec(c(1:5,10,16,22), bold=T) %>% 
+  row_spec(c(4), italic=T) %>%  
+  row_spec(c(5), bold=T) %>%  
+  collapse_rows(columns = c(1,2))
+```
+
