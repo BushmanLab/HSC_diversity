@@ -10,7 +10,6 @@ Rscript R/createAll.R
 ```
 
 * rmarkdown
-* RMySQL
 * parallel
 * tidyverse
 * reshape2
