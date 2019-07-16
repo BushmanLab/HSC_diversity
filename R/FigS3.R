@@ -11,13 +11,30 @@ Rscript_path <- '/home/opt/R-3.4.0/bin/Rscript'
 intSites <- read.table('../data/intSites.mergedSamples.collapsed.csv.gz', sep = ',', header = TRUE)
 
 # Restrict intSites to samples of interest.
-intSites <- bind_rows(subset(intSites, patient == 'WAS5'  & timePoint %in% c('M12.6','M36','M43','M55')),
-                      subset(intSites, patient == 'WAS4'  & timePoint %in% c('M12','M36','M48','M60')),
-                      subset(intSites, patient == 'WAS2'  & timePoint %in% c('M22','M48','M78')),
-                      subset(intSites, patient == 'WAS7'  & timePoint %in% c('M30','M48')),
-                      subset(intSites, patient == 'bS/bS' & timePoint %in% c('M12','M24')),
-                      subset(intSites, patient == 'b0/bE' & timePoint %in% c('M11','M36','M48')))
+intSites <- bind_rows(subset(intSites, patient == 'WAS5'  & timePoint %in% c('M12.6','M36', 'M43','M55')),
+                      subset(intSites, patient == 'WAS4'  & timePoint %in% c('M12',  'M36', 'M48','M60')),
+                      subset(intSites, patient == 'WAS2'  & timePoint %in% c('M22',  'M48', 'M78')),
+                      subset(intSites, patient == 'WAS7'  & timePoint %in% c('M12',  'M30', 'M48')),
+                      subset(intSites, patient == 'bS/bS' & timePoint %in% c('M12',  'M24')),
+                      subset(intSites, patient == 'b0/bE' & timePoint %in% c('M11',  'M36', 'M48')))
 
+intSites <- subset(intSites, cellType %in% c('GRANULOCYTES', 'MONOCYTES', 'BCELLS', 'NKCELLS', 'TCELLS'))
+
+
+# Data report
+f <- list.files(path = '/data/internal/geneTherapy/processedRuns', recursive = TRUE)
+f <- f[grep('GTSP', f)]
+r <- group_by(intSites, patient, timePoint, cellType) %>%
+     summarise(GTSP = GTSP[1], uniqueSites = n_distinct(posid), data = any(grepl(GTSP[1], f))) %>%
+     ungroup()
+
+f2 <- sapply(r$GTSP, function(x){
+       system(paste0("find /data/internal/geneTherapy/processedRuns/HPC_lineage -type f -name '", x, "-*.gz'"), intern = TRUE)
+})
+
+
+
+       
 
 # CellType short hands 
 cellTypeShortHand <- list('GRANULOCYTES' = 'G',  'BM_GRANULOCYTES' = 'G',
@@ -118,6 +135,12 @@ genomicHeatmap <- within(
     
     plot_data$Var1 <- gsub('\\*', '', as.character(plot_data$Var1))
     plot_data$Var1 <- gsub('\\-', '', as.character(plot_data$Var1))
+    
+    
+    levels_var1= gsub('\\*', '',gen_row_names)
+    levels_var1= gsub('\\-', '',levels_var1)
+    plot_data$Var1=factor(plot_data$Var1,levels=levels_var1)
+    
     plot_data$sym  <- ''
     
     gen_plot <- ggplot(plot_data, aes(x = Var2, y = Var1, fill = value)) +
@@ -191,6 +214,12 @@ epiGenomicHeatmap <- within(
     levels(plot_data$Var2) <- heatmap_figure_labels
     
     plot_data$Var1 <- gsub('*', '', plot_data$Var1)
+    
+    
+    levels_var1= gsub('\\*', '',gen_row_names)
+    levels_var1= gsub('\\-', '',levels_var1)
+    plot_data$Var1=factor(plot_data$Var1,levels=levels_var1)
+    
     plot_data$sym  <- ''
     
     gen_plot <- ggplot(plot_data, aes(x = Var2, y = Var1, fill = value)) +
