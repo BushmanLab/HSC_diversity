@@ -35,6 +35,16 @@ library(gtable)
 ### intSites_original <- read.csv('../Data/intSites.noMergedSamples.csv', header = TRUE)
 intSites_original <- read.table(gzfile('../data/intSites.noMergedSamples.csv.gz'), sep = ',', header = TRUE)
 
+intSites_original$timePoint <- as.character(intSites_original$timePoint)
+intSites_original[which(intSites_original$timePoint == 'Y1'),]$timePoint <- 'M12'
+intSites_original[which(intSites_original$timePoint == 'Y2'),]$timePoint <- 'M24'
+intSites_original[which(intSites_original$timePoint == 'Y3'),]$timePoint <- 'M36'
+intSites_original[which(intSites_original$timePoint == 'Y4'),]$timePoint <- 'M48'
+intSites_original[which(intSites_original$timePoint == 'Y5'),]$timePoint <- 'M60'
+intSites_original$timePoint <- factor(intSites_original$timePoint)
+
+
+
 
 intSites <- data.frame(intSites_original) %>%
             dplyr::group_by(sampleName, posid) %>%
@@ -48,8 +58,7 @@ intSites=data.frame(intSites@elementMetadata)
 
  for(i in c('estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
  intSites$cellType=factor(intSites$cellType,levels=levels(intSites$cellType),
-                          labels=c( "Bcells","BM_Bcells","BM_Granulocytes", "BM_Monocytes" ,
-                                    "BM_NKcells", "BM_Tcells" ,"Granulocytes" ,
+                          labels=c( "Bcells","Granulocytes" ,
                                     "Monocytes", "NKcells","Tcells" )) 
 
 

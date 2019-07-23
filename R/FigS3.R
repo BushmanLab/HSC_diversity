@@ -11,26 +11,23 @@ Rscript_path <- '/home/opt/R-3.4.0/bin/Rscript'
 intSites <- read.table('../data/intSites.mergedSamples.collapsed.csv.gz', sep = ',', header = TRUE)
 
 # Restrict intSites to samples of interest.
-intSites <- bind_rows(subset(intSites, patient == 'WAS5'  & timePoint %in% c('M12.6','M36', 'M43','M55')),
-                      subset(intSites, patient == 'WAS4'  & timePoint %in% c('M12',  'M36', 'M48','M60')),
-                      subset(intSites, patient == 'WAS2'  & timePoint %in% c('M22',  'M48', 'M78')),
-                      subset(intSites, patient == 'WAS7'  & timePoint %in% c('M12',  'M30', 'M48')),
-                      subset(intSites, patient == 'bS/bS' & timePoint %in% c('M12',  'M24')),
-                      subset(intSites, patient == 'b0/bE' & timePoint %in% c('M11',  'M36', 'M48')))
+intSites <- bind_rows(subset(intSites, patient == 'WAS5'  & timePoint %in% c('M12.6', 'Y3',   'M43',  'M55')),
+                      subset(intSites, patient == 'WAS4'  & timePoint %in% c('Y1',    'Y3',   'Y4',   'Y5')),
+                      subset(intSites, patient == 'WAS2'  & timePoint %in% c('M22',   'Y4',   'M78')),
+                      subset(intSites, patient == 'WAS7'  & timePoint %in% c('Y1',    'M30',  'Y4')),
+                      subset(intSites, patient == 'bS/bS' & timePoint %in% c('Y1',    'Y2')),
+                      subset(intSites, patient == 'b0/bE' & timePoint %in% c('M11',   'Y3',   'Y4')))
 
 intSites <- subset(intSites, cellType %in% c('GRANULOCYTES', 'MONOCYTES', 'BCELLS', 'NKCELLS', 'TCELLS'))
 
 
 # Data report
-f <- list.files(path = '/data/internal/geneTherapy/processedRuns', recursive = TRUE)
-f <- f[grep('GTSP', f)]
-r <- group_by(intSites, patient, timePoint, cellType) %>%
-     summarise(GTSP = GTSP[1], uniqueSites = n_distinct(posid), data = any(grepl(GTSP[1], f))) %>%
-     ungroup()
-
-f2 <- sapply(r$GTSP, function(x){
-       system(paste0("find /data/internal/geneTherapy/processedRuns/HPC_lineage -type f -name '", x, "-*.gz'"), intern = TRUE)
-})
+# sampleSearchPath <- '/data/internal/geneTherapy/processedRuns/HPC_lineage'
+# f <- list.files(path = sampleSearchPath, recursive = TRUE)
+# f <- f[grep('GTSP', f)]
+# r <- group_by(intSites, patient, timePoint, cellType) %>%
+#      summarise(GTSP = GTSP[1], uniqueSites = n_distinct(posid), data = any(grepl(GTSP[1], f))) %>%
+#      ungroup()
 
 
 
@@ -256,11 +253,11 @@ ggsave(epiGenomicHeatmap$gen_plot, device = 'png', file = 'epiGenPlot.png')
 #--------------------------------------------------------------------------------------------------
 
 # Restrict intSites to samples of interest.
-early <- bind_rows(subset(intSites, patient == 'WAS5' & timePoint == 'M12.6'),
-                   subset(intSites, patient == 'WAS4'  & timePoint == 'M12'),
+early <- bind_rows(subset(intSites, patient == 'WAS5' & timePoint == 'Y1.6'),
+                   subset(intSites, patient == 'WAS4'  & timePoint == 'Y1'),
                    subset(intSites, patient == 'WAS2'  & timePoint == 'M22'),
                    subset(intSites, patient == 'WAS7'  & timePoint == 'M30'),
-                   subset(intSites, patient == 'bS/bS' & timePoint == 'M12'),
+                   subset(intSites, patient == 'bS/bS' & timePoint == 'Y1'),
                    subset(intSites, patient == 'b0/bE' & timePoint == 'M11'))
 
 late <- bind_rows(subset(intSites,  patient == 'WAS5' & timePoint == 'M55'),

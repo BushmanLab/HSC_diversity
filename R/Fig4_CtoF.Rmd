@@ -35,6 +35,16 @@ library(gtable)
 ### intSites <- read.csv('../Data/intSites.mergedSamples.collapsed.csv', header = TRUE)
 intSites <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
 
+
+intSites$timePoint <- as.character(intSites$timePoint)
+intSites[which(intSites$timePoint == 'Y1'),]$timePoint <- 'M12'
+intSites[which(intSites$timePoint == 'Y2'),]$timePoint <- 'M24'
+intSites[which(intSites$timePoint == 'Y3'),]$timePoint <- 'M36'
+intSites[which(intSites$timePoint == 'Y4'),]$timePoint <- 'M48'
+intSites[which(intSites$timePoint == 'Y5'),]$timePoint <- 'M60'
+intSites$timePoint <- factor(intSites$timePoint)
+
+
 for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
 
 
@@ -103,8 +113,6 @@ intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSi
   
   assign(paste('liste_intSites_new_sup',0,sep=''),lapply(crossOverReports,function(x){  
    
-     if(x$source == 'BoneMarrow') names(x$table) <- paste0('BM_', names(x$table))
-    
     # Subset the intSite data to include only sites from a specific cell type and time point.
     i <- which(intSites$patient==x$patient &
                intSites$timePoint==x$timePoint &
@@ -206,8 +214,6 @@ intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSi
   
   
  list_intSites_th_Corrected=lapply(crossOverReports[samples],function(cross){  
-  
-  if(cross$source == 'BoneMarrow') names(cross$table) <- paste0('BM_', names(cross$table))
     
     # Subset the intSites_threshold_Initial data to include only sites from a specific cell type and time point.
     i <- which(intSites_threshold_Initial$key == paste(c(cross$patient, cross$timePoint, cross$source),collapse = "|")) 
@@ -270,18 +276,6 @@ th_small=theme_bw()+
         strip.text=element_text(family='ArialMT',size=27,colour='black',face='bold'),
         axis.text=element_text(family='ArialMT',size=19, colour='black',face='bold'),
         plot.title=element_text(family='ArialMT',size=27, colour='black',face='bold'))
-
-
-# Fix the colors and order of all the possible clusters:
-colors <- c(GMBKT='mediumorchid4',GMKT='darkorchid',GMBT='blueviolet',GMBK='mediumpurple4',GBKT='magenta4',MBKT='hotpink4',
-            GMB='forestgreen',GMK='deepskyblue3',GMT='thistle4',GBT='purple1',GBK='aquamarine3',GKT='thistle3',
-            MBT='sienna3',MBK='honeydew3',MKT='lightpink4',BKT='coral2',
-            MB='cornsilk3',MK='plum3',GB='green3',GK='cadetblue4',GM='deepskyblue4',GT='darkslateblue',MT='red4',
-            BK='lightseagreen',BT='darkorange2',KT='hotpink3',
-            T='red3',B='lightgoldenrod',K='turquoise2',G='royalblue4',M='gray22')
-
-fac=c('GMBKT',"GMKT",'GMBT','GMBK','GBKT','MBKT','GMK','GMB','GMT','GBT','GBK','GKT',
-      'MBK','MBT','MKT','BKT','MB','MK','MT', 'GM', 'GB','GK','GT', 'BK','BT','KT','G','M','B','K','T')
 
 celltype=c('Granulocytes_corrected','Monocytes_corrected','Bcells_corrected','NKcells_corrected','Tcells_corrected')
 

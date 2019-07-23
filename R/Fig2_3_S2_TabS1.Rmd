@@ -27,7 +27,17 @@ library(DataCombine)
 intSites_original <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
      
 intSites=intSites_original
+
+intSites$timePoint <- as.character(intSites$timePoint)
+intSites[which(intSites$timePoint == 'Y1'),]$timePoint <- 'M12'
+intSites[which(intSites$timePoint == 'Y2'),]$timePoint <- 'M24'
+intSites[which(intSites$timePoint == 'Y3'),]$timePoint <- 'M36'
+intSites[which(intSites$timePoint == 'Y4'),]$timePoint <- 'M48'
+intSites[which(intSites$timePoint == 'Y5'),]$timePoint <- 'M60'
+intSites$timePoint <- factor(intSites$timePoint)
+
 intSites$key=paste(as.character(intSites$patient),as.character(intSites$timePoint),sep='_')
+
 
 intSites=subset(intSites,key%in%c('WAS2_M22','WAS2_M48','WAS2_M78','WAS4_M12','WAS4_M36','WAS4_M48','WAS4_M60',
                                   'WAS5_M12.6','WAS5_M36','WAS5_M43','WAS5_M55','WAS7_M12','WAS7_M30','WAS7_M48',
@@ -190,18 +200,6 @@ th_small=theme_bw()+
          plot.title=element_text(family='ArialMT',size=32, colour='black',face='bold'),
          legend.text=element_text(family='ArialMT',size=24.5, colour='black',face='bold'))
 
-
-### Fix the colors and order of the clusters
-colors <- c(GMBKT='mediumorchid4',GMKT='darkorchid',GMBT='blueviolet',GMBK='mediumpurple4',GBKT='magenta4',MBKT='hotpink4',
-            GMB='forestgreen',GMK='deepskyblue3',GMT='thistle4',GBT='lemonchiffon2',GBK='aquamarine3',GKT='thistle3',
-            MBT='sienna3',MBK='honeydew3',MKT='lightpink4',BKT='coral2',
-            MB='cornsilk3',MK='plum3',GB='green3',GK='cadetblue4',GM='deepskyblue4',GT='darkslateblue',MT='red4',
-            BK='lightseagreen',BT='darkorange2',KT='hotpink3',
-            T='red3',B='lightgoldenrod',K='turquoise2',G='royalblue4',M='gray22','[Blood]'='black')
-
-fac=c('GMBKT',"GMKT",'GMBT','GMBK','GBKT','MBKT','GMK','GMB','GMT','GBT','GBK','GKT',
-      'MBK','MBT','MKT','BKT','MB','MK','MT', 'GM', 'GB','GK','GT', 'BK','BT','KT','G','M','B','K','T')
-
 ### Patients 
 patient_samp=c('WAS4','WAS5','bS/bS','WAS2','WAS7','b0/bE')
 
@@ -233,9 +231,8 @@ A=ggplot(data=indic,aes(x=Timepoint,y=UniqueSites,colour=Patient_name,shape=Sour
   scale_y_continuous(limits=c(min(indic$UniqueSites),max(indic$UniqueSites)))+
   scale_shape_manual('',values=c(16,15))+
   labs(y='Unique Sites',x='Months post gene therapy',colour='')+
-  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+    
-  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),nrow=1),
-         shape=guide_legend(nrow=1))
+  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0)) +
+  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),nrow=1), shape=guide_legend(nrow=1))
   
 
 #B
@@ -246,9 +243,8 @@ B=ggplot(data=indic,aes(x=Timepoint,colour=Patient_name,y=Shannon,shape=Source))
   scale_y_continuous(limits=c(0,max(indic$Shannon)))+
   scale_shape_manual('',values=c(16,15))+
   labs(y='Shannon Index',x='Months post gene therapy',colour='')+
-  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+    
-  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),nrow=1),
-         shape=guide_legend(nrow=1))
+  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0)) +
+  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),nrow=1), shape=guide_legend(nrow=1))
 
   #Print the plots in the same panel.
   grid.arrange(A,B,ncol=1)
@@ -267,9 +263,9 @@ CHAO=ggplot(indic_selec, aes(x=Source,y=chao1_norm))+geom_boxplot()+
      scale_shape_manual('',values=c(16,15))+
      labs(y='Est. active HSC number (log)',x='',colour='',subtitle='')+
      th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0),
-                     axis.text.x=element_text(family='ArialMT',size=22, colour='black',face='bold'))+    
-     guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),byrow=T),
-            shape=guide_legend(nrow=2,byrow=TRUE))
+                     axis.text.x=element_text(family='ArialMT',size=22, colour='black',face='bold')) +    
+
+     guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),byrow=T), shape=guide_legend(nrow=2,byrow=TRUE))
   
 
 CHAO_CD=ggplot(indic_selec, aes(x=Source,y=chao1_norm_div_CD34))+geom_boxplot()+
@@ -277,9 +273,8 @@ CHAO_CD=ggplot(indic_selec, aes(x=Source,y=chao1_norm_div_CD34))+geom_boxplot()+
         scale_shape_manual('',values=c(16,15))+
         labs(y= expression(atop('Est. active HSC number',paste('/',10^6,' infused CD34'))),x='',colour='',subtitle='')+
         th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0), 
-                       axis.text.x=element_text(family='ArialMT',size=22, colour='black',face='bold'))+    
-        guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),byrow=T),
-               shape=guide_legend(nrow=2,byrow=TRUE))
+                       axis.text.x=element_text(family='ArialMT',size=22, colour='black',face='bold')) +
+        guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),byrow=T), shape=guide_legend(nrow=2,byrow=TRUE))
   
   #Print the plots in the same panel.
   grid.arrange(CHAO, CHAO_CD,nrow=1)
@@ -310,9 +305,8 @@ CHAO_CD=ggplot(indic_selec, aes(x=Source,y=chao1_norm_div_CD34))+geom_boxplot()+
    labs(y=paste0('Est. active HSC number (log)'),x='Corrected CD34 per kg',colour='',
        title=paste('r =',round(r$r[2],3)),
        subtitle=paste('p =',round(r$p[2],3)))+
-  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+
-  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),byrow=T),
-         shape=guide_legend(nrow=2,byrow=TRUE))
+  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0)) +
+  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),byrow=T),shape=guide_legend(nrow=2,byrow=TRUE))
 
 ```
 
@@ -330,8 +324,6 @@ intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSi
   
   assign(paste('liste_intSites_new_sup',0,sep=''),lapply(crossOverReports,function(x){  
    
-     if(x$source == 'BoneMarrow') names(x$table) <- paste0('BM_', names(x$table))
-    
     # Subset the intSite data to include only sites from a specific cell type and time point.
     i <- which(intSites$patient==x$patient & intSites$timePoint==x$timePoint &
                  toupper(intSites$cellType) %in% toupper(names(x$table)))
@@ -412,9 +404,8 @@ intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSi
   labs(x='Corrected CD34 per kg',y='Mean IS Abundance',colour='',
      title=paste('r =',round(r$r[2],3)),
      subtitle=paste('p =',round(r$p[2],3)))+
-  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+
-  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),byrow=T),
-         shape=guide_legend(nrow=2))
+  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0)) +
+    guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), size = 6, linetype = 0),byrow=T), shape=guide_legend(nrow=2))
 
 ```
 
@@ -520,7 +511,7 @@ ______________________________________________________________________
 
   colnames(indic_TOT)<-c('Patient','Timepoint','Cell Type','UniqueSites','Inferred cells','Total  Reads')
   indic_TOT$Source=ifelse(indic_TOT$Patient%in% c( 'WAS4','WAS5','bS/bS'),'BM','MPB')
-  indic_TOT$Timepoint=gsub('M','',indic_TOT$Timepoint)
+  indic_TOT$Timepoint=gsub('m','',indic_TOT$Timepoint)
   
   indic_TOT$`Cell Type`='Total'
   indic_TOT$Chao1=''

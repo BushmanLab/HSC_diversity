@@ -39,6 +39,17 @@ library(ggalluvial)
 ### intSites <- read.csv('../Data/intSites.mergedSamples.collapsed.csv', header = TRUE)
 intSites <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
 
+
+intSites$timePoint <- as.character(intSites$timePoint)
+intSites[which(intSites$timePoint == 'Y1'),]$timePoint <- 'M12'
+intSites[which(intSites$timePoint == 'Y2'),]$timePoint <- 'M24'
+intSites[which(intSites$timePoint == 'Y3'),]$timePoint <- 'M36'
+intSites[which(intSites$timePoint == 'Y4'),]$timePoint <- 'M48'
+intSites[which(intSites$timePoint == 'Y5'),]$timePoint <- 'M60'
+intSites$timePoint <- factor(intSites$timePoint)
+
+
+
 for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
 
 
@@ -110,8 +121,6 @@ intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSi
  # Put the data in a wide format count table.
  assign(paste('liste_intSites_new_sup',0,sep=''),lapply(crossOverReports,function(x){  
    
-     if(x$source == 'BoneMarrow') names(x$table) <- paste0('BM_', names(x$table))
-    
     # Subset the intSite data to include only sites from a specific cell type and time point.
     i <- which(intSites$patient==x$patient &
                intSites$timePoint==x$timePoint &
@@ -322,7 +331,8 @@ th_small=theme_bw()+
          plot.title=element_text(family='ArialMT',size=25, colour='black',face='bold'))
 
 # Fix the colors and order of all the possible clusters:
-colors <- c(GMBKT='mediumorchid4',GMKT='darkorchid',GMBT='blueviolet',GMBK='mediumpurple4',GBKT='magenta4',MBKT='hotpink4',
+colors <- c(GMBKT='mediumorchid4',GMKT='darkorchid',GMBT='mediumpurple4',GMBK='mediumpurple',
+            GBKT='magenta4',MBKT='hotpink4',
             GMB='forestgreen',GMK='deepskyblue3',GMT='thistle4',GBT='purple1',GBK='aquamarine3',GKT='thistle3',
             MBT='sienna3',MBK='honeydew3',MKT='lightpink4',BKT='coral2',
             MB='cornsilk3',MK='plum3',GB='green3',GK='cadetblue4',GM='deepskyblue4',GT='darkslateblue',MT='red4',
@@ -1062,12 +1072,12 @@ data$cluster=factor(data$cluster,levels=fac)
 ##### _Supp Figure 9A : cell types abundances_
 
 
-```{r SuppFig9A, echo=FALSE, results='asis', message=FALSE, warning=FALSE, fig.height=14,fig.width=14,dev='png',dpi=350}
+```{r SuppFig9A, echo=FALSE, results='asis', message=FALSE, warning=FALSE,fig.height=14,fig.width=14,dev='png',dpi=350}
 
-## Get the data
+  ## Get the data
   plots=list()
   
-for (pat in 1:length(samples)){
+  for (pat in 1:length(samples)){
   
   p=samples[pat]
   
@@ -1078,7 +1088,7 @@ for (pat in 1:length(samples)){
   
   Values=lapply(cells, function(C){
     
-    cat('\n ')
+    cat('\n')
     
     ## Data
     
@@ -1133,7 +1143,7 @@ for (pat in 1:length(samples)){
   table[table[,5]<2e-16,5]='<2e-16'
   
  #Show the models results. 
- print( kable(table, caption =a,align = "c", digits = 16, escape = FALSE, booktabs=TRUE) %>% 
+ print(kable(table, caption =a,align = "c", digits = 16, escape = FALSE, booktabs=TRUE) %>% 
           add_header_above(header=c(' ' = 1,'Granulocytes'=2,'Tcells'=2)) %>%
           kable_styling(c("striped", "bordered" ,"condensed")) %>%
           column_spec(1, bold = T))
@@ -1171,9 +1181,13 @@ for (pat in 1:length(samples)){
    #Add the stars.
    box= box+geom_text(data=labs,aes(x=labs,y = 250, label =stars,colour=col),size=14) 
   
-  plots[[pat]]=box
-  
-}
+   #Add the x-axis colors according the clusters.
+   gt=ggplotGrob(box)
+   labels=gt$grobs[[6]]$children[[2]]$grobs[[2]]$children[[1]]$label
+   gt$grobs[[6]]$children[[2]]$grobs[[2]]$children[[1]]$gp$col <- colors[gsub('\n.*','',labels)]
+ 
+   plots[[pat]]=gt
+  }
 
   ## Print all the ternary plots in the same panel.
   grid.arrange(grobs=plots,ncol=2)

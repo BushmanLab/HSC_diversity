@@ -1,28 +1,25 @@
-library(RMySQL)
 library(GenomicRanges)
-library(parallel)
+library(gt23)
 library(dplyr)
-source('createIntSiteData.lib.R')
-CPUs <- 40
+options(stringsAsFactors = FALSE)
 
-# Retrieve intSite data from Bushman lab integration and sample databases.
-invisible(sapply(dbListConnections(MySQL()), dbDisconnect))
-intSites <- getIntSiteData('specimen_management', 
-                           'intsites_HSCdiversity', 
-                            patients = c('pFR01', 'pFR03', 'pFR04', 'pFR05', 'pLT', 'pTST'))
+sampleList <- readLines('../data/sampleList.20190718')
 
+# Define samples and retrieve genomic fragments.
+dbConn  <- DBI::dbConnect(RMySQL::MySQL(), group = 'specimen_management')
+samples <- DBI::dbGetQuery(dbConn, "select SpecimenAccNum from gtsp where Patient in ('pFR01', 'pFR03', 'pFR04', 'pFR05', 'pLT', 'pTST')")
+intSites <- getDBgenomicFragments(samples$SpecimenAccNum, 'specimen_management', 'intsites_miseq')
+            
 
 
 # Standardize cell type naming and subset the data to only incluse select cell types.
-intSites$cellType <- toupper(as.character(intSites$cellType))
-intSites$cellType <- gsub('\\s', '', intSites$cellType)
-intSites$cellType <- gsub('\\-', '', intSites$cellType)
+intSites$cellType <- gsub('\\s|\\-', '', toupper(intSites$cellType))
 intSites$cellType <- gsub('NEUTROPHILS', 'GRANULOCYTES', intSites$cellType)
-cellTypes <- c('GRANULOCYTES', 'TCELLS', 'MONOCYTES', 'BCELLS', 'NKCELLS', 'BM_BCELLS', 'BM_MONOCYTES', 'BM_GRANULOCYTES', 'BM_NKCELLS', 'BM_TCELLS')
-intSites <- subset(intSites, cellType %in% cellTypes)
-table(unique(p$sampleName) %in% unique(intSites$GTSP))
+intSites <- subset(intSites, cellType %in% c('GRANULOCYTES', 'TCELLS', 'MONOCYTES', 'BCELLS', 'NKCELLS'))
 
+stopifnot(all(sampleList %in% intSites$GTSP))
 
+intSites <- subset(intSites, GTSP %in% sampleList)
 
 # Change patient codes.
 convertName <- function(x){
@@ -34,128 +31,14 @@ convertName <- function(x){
 
 intSites$patient <- convertName(intSites$patient)
 
-standardizeIntSites <- function(intSites){
-  
-  # Standardize break points by sample.
-  cluster <- makeCluster(CPUs)
-  intSites <- unlist(
-    GRangesList(
-      parLapply(cluster, split(intSites, intSites$sampleName), 
-                function(p){
-                  library(GenomicRanges)
-                  library(gintools)
-                  refine_breakpoints(p, counts.col = 'reads')
-                })))
-  
-  
-  # Standardize intSites by subject.
-  intSites <- unlist(
-    GRangesList(
-      parLapply(cluster, split(intSites, intSites$patient), 
-                function(p){
-                  library(GenomicRanges)
-                  library(gintools)
-                  standardize_sites(p, counts.col = 'reads')
-                })))
-  
-  stopCluster(cluster)
-  
-  intSites$posid <- paste0(seqnames(intSites), strand(intSites), start(flank(intSites, -1, start = T)))
-  intSites
-}
 
+# Standardize genomic fragment boundaries.
+intSites <- stdIntSiteFragments(intSites) 
 
-collapseReplicatesCalcAbunds <- function(intSites){
-  cluster <- makeCluster(CPUs)
-  o <- unlist(GRangesList(parLapply(cluster, split(intSites, intSites$GTSP), function(x){
-       library(dplyr)
-       library(GenomicRanges)
-       x$sampleFragWidths <- paste(x$sampleName, width(x))
-       x <- flank(x, -1, start = T)
-       group_by(data.frame(x), posid) %>%
-       mutate(reads = sum(reads)) %>%
-       mutate(estAbund = n_distinct(sampleFragWidths)) %>%
-       dplyr::slice(1) %>%
-       ungroup() %>%
-       select(seqnames, start, end, strand, posid, reads, patient, sampleName, GTSP, 
-              cellType, timePoint, timePointDays, timePointMonths, estAbund) %>%
-       mutate(relAbund = (estAbund / sum(estAbund))*100) %>%
-       makeGRangesFromDataFrame(keep.extra.columns = TRUE)
-     })))
-  
-  stopCluster(cluster)
-  o$sampleName <- NULL
-  o
-}
-
-
-nearestFeatures <- function(intSites){
-  
-  # Create a splitting vector for parallelization.
-  intSites$s <- ntile(1:length(intSites), CPUs)
-  
-  cluster <- makeCluster(CPUs)
-  
-  # Add nearest gene and nearest oncogene annotations.
-  names(intSites) <- NULL
-  intSites  <- unlist(
-    GRangesList(
-      parLapply(cluster, split(intSites, intSites$s), 
-                function(p){
-                  source('../lib/Everett.R')
-                  library(dplyr)
-                  
-                  # Nearest gene boundary
-                  p$order <- 1:length(p)
-                  p <- nearestGenomicFeature(p, subject = readRDS('../data/hg38.refSeqGenesGRanges.rds'), subject.exons = readRDS('../data/hg38.refSeqGenesGRanges.exons.rds'))
-                  p <- p[order(p$order)]
-                  
-                  # Nearest oncogene
-                  # Provide a list of concogenes to nearestGenomicFeature() and then extract 
-                  # the metadata from the returned object, order it, and update the metadata 
-                  # for the from the nearest feature object.
-                  onogoGeneList <- readRDS('../data/humanOncoGenes.rds')
-                  o <- nearestGenomicFeature(p, subject = readRDS('../data/hg38.refSeqGenesGRanges.rds'), subject.exons = readRDS('../data/hg38.refSeqGenesGRanges.exons.rds'), geneList = onogoGeneList)
-                  om <- data.frame(mcols(o))
-                  om <- om[order(om$order),]
-                  
-                  pm <- data.frame(mcols(p))
-                  pm <- pm[order(pm$order),]
-                  
-                  pm$nearestOncoFeature       <- om$nearestFeature
-                  pm$nearestOncoFeatureDist   <- om$nearestFeatureDist
-                  pm$nearestOncoFeatureStrand <- om$nearestFeatureStrand
-                  mcols(p) <- pm
-                  
-                  # Nearest lymphoma associated genes.
-                  onogoGeneList <- readRDS('../data/humanLymphomaGenes.rds')
-                  o <- nearestGenomicFeature(p, subject = readRDS('../data/hg38.refSeqGenesGRanges.rds'), subject.exons = readRDS('../data/hg38.refSeqGenesGRanges.exons.rds'), geneList = onogoGeneList)
-                  om <- data.frame(mcols(o))
-                  om <- om[order(om$order),]
-                  
-                  pm <- data.frame(mcols(p))
-                  pm <- pm[order(pm$order),]
-                  
-                  pm$nearestlymphomaFeature       <- om$nearestFeature
-                  pm$nearestlymphomaFeatureDist   <- om$nearestFeatureDist
-                  pm$nearestlymphomaFeatureStrand <- om$nearestFeatureStrand
-                  
-                  mcols(p) <- pm
-                  
-                  p
-                })))
-  
-  stopCluster(cluster)
-  
-  intSites$s <- NULL
-  intSites
-}
 
 # Create an intsite object (framgent level) where no samples have been merged. 
-intSites.noMergedSamples <- standardizeIntSites(intSites)
-intSites.noMergedSamples.collapsed <- collapseReplicatesCalcAbunds(intSites.noMergedSamples)
-intSites.noMergedSamples.collapsed <- nearestFeatures(intSites.noMergedSamples.collapsed)
-
+intSites.noMergedSamples <- intSites
+intSites.noMergedSamples.collapsed <- collapseReplicatesCalcAbunds(intSites.noMergedSamples) %>% annotateIntSites()
 
 
 # Now we create a similar object where biological replicates are merged.
@@ -180,7 +63,6 @@ intSites.mergedSamples[which(intSites.mergedSamples$sampleName == 'GTSP2267-3')]
 intSites.mergedSamples[which(intSites.mergedSamples$sampleName == 'GTSP2266-7')]$GTSP <- 'GTSP2266'
 intSites.mergedSamples[which(intSites.mergedSamples$sampleName == 'GTSP2267-4')]$sampleName <- 'GTSP2266-8'
 intSites.mergedSamples[which(intSites.mergedSamples$sampleName == 'GTSP2266-8')]$GTSP <- 'GTSP2266'
-
 intSites.mergedSamples[which(intSites.mergedSamples$timePoint == 'M55.1')]$timePoint <- 'M55'
 intSites.mergedSamples[which(intSites.mergedSamples$timePoint == 'M55')]$timePointDays <- 1672.918
 
@@ -202,11 +84,8 @@ intSites.mergedSamples[which(intSites.mergedSamples$sampleName == 'GTSP1293-11')
 intSites.mergedSamples[which(intSites.mergedSamples$sampleName == 'GTSP1295-4')]$sampleName <- 'GTSP1293-12'
 intSites.mergedSamples[which(intSites.mergedSamples$sampleName == 'GTSP1293-12')]$GTSP <- 'GTSP1293'
 
-intSites.mergedSamples <- standardizeIntSites(intSites.mergedSamples)
-intSites.mergedSamples.collapsed <- collapseReplicatesCalcAbunds(intSites.mergedSamples)
-intSites.mergedSamples.collapsed <- nearestFeatures(intSites.mergedSamples.collapsed)
-
-
+intSites.mergedSamples.collapsed <- collapseReplicatesCalcAbunds(intSites.mergedSamples) %>% annotateIntSites()
+  
 # Write out and compress intSite data.
 write.table(data.frame(intSites.noMergedSamples), sep = ',', row.names = FALSE, col.names = TRUE, file = '../data/intSites.noMergedSamples.csv')
 write.table(data.frame(intSites.noMergedSamples.collapsed), sep = ',', row.names = FALSE, col.names = TRUE, file = '../data/intSites.noMergedSamples.collapsed.csv')
@@ -217,3 +96,5 @@ system('gzip -9 ../data/intSites.noMergedSamples.collapsed.csv')
 system('gzip -9 ../data/intSites.mergedSamples.csv')
 system('gzip -9 ../data/intSites.mergedSamples.collapsed.csv')
 
+# Write out a list of samples for SRA deposition.
+write(unique(intSites$GTSP), file = '../data/sampleList')
