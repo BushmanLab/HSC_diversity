@@ -315,7 +315,7 @@ o <- dplyr::left_join(early, late, by = "nearestFeature") %>%
 o$onco <- toupper(o$nearestFeature) %in% toupper(onocGenes)
 o$maxAbund <- maxAbund[match(o$nearestFeature, maxAbund$nearestFeature),]$maxRelAbund
 o$geneLabel <- sub('LOC101929163,C6orf10', 'C6orf10', o$geneLabel)
-o$onco <- ifelse(o$onco, 'Onocogene', 'Non-oncogene')
+o$onco <- ifelse(o$onco, 'Oncogene', 'Non-oncogene')
 
 library(ggrepel)
 ppNum <- function(n) format(n, big.mark = ",", scientific = FALSE, trim = TRUE)
