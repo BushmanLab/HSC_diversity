@@ -8,7 +8,7 @@ sampleList <- readLines('../data/sampleList.20190718')
 # Define samples and retrieve genomic fragments.
 dbConn  <- DBI::dbConnect(RMySQL::MySQL(), group = 'specimen_management')
 samples <- DBI::dbGetQuery(dbConn, "select SpecimenAccNum from gtsp where Patient in ('pFR01', 'pFR03', 'pFR04', 'pFR05', 'pLT', 'pTST')")
-intSites <- getDBgenomicFragments(samples$SpecimenAccNum, 'specimen_management', 'intsites_miseq')
+intSites <- getDBgenomicFragments(samples$SpecimenAccNum, 'specimen_management', 'intsites_HSCdiversity')
             
 
 
