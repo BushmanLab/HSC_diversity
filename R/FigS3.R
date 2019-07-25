@@ -11,15 +11,14 @@ Rscript_path <- '/home/opt/R-3.4.0/bin/Rscript'
 intSites <- read.table('../data/intSites.mergedSamples.collapsed.csv.gz', sep = ',', header = TRUE)
 
 # Restrict intSites to samples of interest.
-intSites <- bind_rows(subset(intSites, patient == 'WAS5'  & timePoint %in% c('M12.6', 'Y3',   'M43',  'M55')),
-                      subset(intSites, patient == 'WAS4'  & timePoint %in% c('Y1',    'Y3',   'Y4',   'Y5')),
-                      subset(intSites, patient == 'WAS2'  & timePoint %in% c('M22',   'Y4',   'M78')),
-                      subset(intSites, patient == 'WAS7'  & timePoint %in% c('Y1',    'M30',  'Y4')),
-                      subset(intSites, patient == 'bS/bS' & timePoint %in% c('Y1',    'Y2')),
-                      subset(intSites, patient == 'b0/bE' & timePoint %in% c('M11',   'Y3',   'Y4')))
+intSites <- bind_rows(subset(intSites, patient == 'WAS5'  & timePoint %in% c('M12.6','M36', 'M43','M55')),
+subset(intSites, patient == 'WAS4'  & timePoint %in% c('M12',  'M36', 'M48','M60')),
+subset(intSites, patient == 'WAS2'  & timePoint %in% c('M22',  'M48', 'M78')),
+subset(intSites, patient == 'WAS7'  & timePoint %in% c('M12',  'M30', 'M48')),
+subset(intSites, patient == 'bS/bS' & timePoint %in% c('M12',  'M24')),
+subset(intSites, patient == 'b0/bE' & timePoint %in% c('M11',  'M36', 'M48')))
 
 intSites <- subset(intSites, cellType %in% c('GRANULOCYTES', 'MONOCYTES', 'BCELLS', 'NKCELLS', 'TCELLS'))
-
 
 # Data report
 # sampleSearchPath <- '/data/internal/geneTherapy/processedRuns/HPC_lineage'

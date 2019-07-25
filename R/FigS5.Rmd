@@ -33,20 +33,7 @@ library(gtools)
 ### Data loading and formatting  ###
 #################################
 
-
-#intSites <- read.csv('../Data/intSites.nomergedSamples.collapsed.csv', header = TRUE)
 intSites <- read.table(gzfile('../data/intSites.noMergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
-
-
-intSites$timePoint <- as.character(intSites$timePoint)
-intSites[which(intSites$timePoint == 'Y1'),]$timePoint <- 'M12'
-intSites[which(intSites$timePoint == 'Y2'),]$timePoint <- 'M24'
-intSites[which(intSites$timePoint == 'Y3'),]$timePoint <- 'M36'
-intSites[which(intSites$timePoint == 'Y4'),]$timePoint <- 'M48'
-intSites[which(intSites$timePoint == 'Y5'),]$timePoint <- 'M60'
-intSites$timePoint <- factor(intSites$timePoint)
-
-
 
 for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
 

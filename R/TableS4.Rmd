@@ -24,16 +24,7 @@ library(knitr)
 ### Data loading and formatting  ###
 ####################################
 
-### intSites <- read.csv('../Data/intSites.mergedSamples.collapsed.csv', header = TRUE)
 intSites <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
-
-intSites$timePoint <- as.character(intSites$timePoint)
-intSites[which(intSites$timePoint == 'Y1'),]$timePoint <- 'M12'
-intSites[which(intSites$timePoint == 'Y2'),]$timePoint <- 'M24'
-intSites[which(intSites$timePoint == 'Y3'),]$timePoint <- 'M36'
-intSites[which(intSites$timePoint == 'Y4'),]$timePoint <- 'M48'
-intSites[which(intSites$timePoint == 'Y5'),]$timePoint <- 'M60'
-intSites$timePoint <- factor(intSites$timePoint)
 
 for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
 
@@ -111,7 +102,9 @@ intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSi
  # Put the data in a wide format count table.
   
   assign(paste('liste_intSites_new_sup',0,sep=''),lapply(crossOverReports,function(x){  
- 
+   
+     if(x$source == 'BoneMarrow') names(x$table) <- paste0('BM_', names(x$table))
+    
     # Subset the intSite data to include only sites from a specific cell type and time point.
     i <- which(intSites$patient==x$patient & intSites$timePoint==x$timePoint & 
                  toupper(intSites$cellType) %in% toupper(names(x$table)))
@@ -214,7 +207,9 @@ intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSi
  source('./AbundanceCorrection_2steps_Normalization_Steps.R')
   
  list_intSites_th_Corrected=lapply(crossOverReports,function(cross){  
-   
+  
+  if(cross$source == 'BoneMarrow') names(cross$table) <- paste0('BM_', names(cross$table))
+    
     # Subset the intSites_threshold_Initial data to include only sites from a specific cell type and time point.
     i <- which(intSites_threshold_Initial$key == paste(c(cross$patient, cross$timePoint, cross$source),collapse = "|")) 
     df <- intSites_threshold_Initial[i,]
@@ -408,9 +403,9 @@ library(kableExtra)
 kable(Data_allpat,format='html', align = "c")%>% 
   kable_styling(c("striped", "bordered" ,"condensed"),full_width = F,font_size = 8) %>%
   add_header_above(c(" "," "," "," ", " ","Initial" = 6, "Step 1" = 6,"Step2"= 6)) %>% 
-  column_spec(c(1:5,10,16,22), bold=T) %>% 
-  # row_spec(c(9,19,29,39,49), italic=T) %>%  
-  # row_spec(c(10,20,30,40,50), bold=T) %>%  
+  column_spec(c(1:5,11,17,23), bold=T) %>% 
+  row_spec(c(9,19,29,39,49), italic=T) %>%  
+  row_spec(c(10,20,30,40,50), bold=T) %>%  
   collapse_rows(columns = c(1,2))
 
 
@@ -427,9 +422,9 @@ ex=Show_DF_Example(p='WAS4|m48|Blood',
 kable(ex,format='html', align = "c")%>% 
   kable_styling(c("striped", "bordered" ,"condensed"),full_width = F,font_size = 8) %>%
   add_header_above(c(" "," "," "," ", " ","Initial" = 6, "Step 1" = 6,"Step2"= 6)) %>% 
-  # column_spec(c(1:5,10,16,22), bold=T) %>% 
-  # row_spec(c(4), italic=T) %>%  
-  # row_spec(c(5), bold=T) %>%  
+  column_spec(c(1:5,11,17,23), bold=T) %>% 
+  row_spec(c(4), italic=T) %>%  
+  row_spec(c(5), bold=T) %>%  
   collapse_rows(columns = c(1,2))
 ```
 
