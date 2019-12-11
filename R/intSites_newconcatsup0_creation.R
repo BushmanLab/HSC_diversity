@@ -28,7 +28,7 @@ library(ggalluvial)
 ####################################
 
 
-intSites <- read.table(gzfile('../../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
+intSites <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
 
 
 for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
@@ -40,7 +40,7 @@ for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(int
 #
 
 options(stringsAsFactors = FALSE)
-crossOverReports <- readChar('../../data/crossOverReports.tsv', file.info('../../data/crossOverReports.tsv')$size)
+crossOverReports <- readChar('../data/crossOverReports.tsv', file.info('../data/crossOverReports.tsv')$size)
 crossOverReports <- unlist(strsplit(crossOverReports, '#%'))
 crossOverReports <- unlist(lapply(crossOverReports, function(x){
   source     <- ifelse(grepl('#source:', x), sub('\\t+$', '', str_match(x, '#source:\\s+(.+)')[2]), '')
