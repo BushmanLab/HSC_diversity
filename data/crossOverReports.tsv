@@ -331,11 +331,11 @@ Granulocytes     x       x       x       x       x
 Nkcells x       x       x       x       x
 Tcells  x       x       x       x       x
 COUNTS	Bcells	Monocytes	Granulocytes	Nkcells	Tcells
-Bcells	5979	2	27	2	0.1				
-Monocytes	2	6506	22	0.1	98				
-Granulocytes	3	0.1	4417	1	10				
-Nkcells	0.1	0.1	11	2272	0.1				
-Tcells	24	6	1	0.1	4655				
+Bcells	5979	2	27	2	0				
+Monocytes	2	6506	22	0	98				
+Granulocytes	3	0	4417	1	10				
+Nkcells	0	0	11	2272	0				
+Tcells	24	6	1	0	4655				
 #%						
 
 
