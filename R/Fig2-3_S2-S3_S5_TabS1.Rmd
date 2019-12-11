@@ -1,0 +1,476 @@
+---
+fontsize: 11pt
+geometry: margin=0.25in
+output:
+  html_document:
+    keep_md: no
+---
+
+
+```{r DataPrep, include=FALSE}
+
+#### **Code for generating**
+#### **Figure 2-3 **
+#### **Supplemental Figure 2-3-5 **
+#### **Supplemental Table 1 **
+
+###Loading the packages
+library(plyr)
+library(tidyverse)
+library(reshape2)
+library(psych)
+library(scales)
+library(gridExtra)
+library(vegan)
+library(kableExtra)
+library(DataCombine)
+
+intSites_original <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'),
+                                sep = ',', header = TRUE)
+     
+intSites=intSites_original
+
+intSites$key=paste(as.character(intSites$patient),as.character(intSites$timePoint),sep='_')
+
+intSites=subset(intSites,key%in%c('WAS2_M22','WAS2_M48','WAS2_M78',
+                                  'WAS4_M12','WAS4_M36','WAS4_M48','WAS4_M60',
+                                  'WAS5_M12.6','WAS5_M36','WAS5_M43','WAS5_M55',
+                                  'WAS7_M12','WAS7_M30','WAS7_M48',
+                                  'b0/bE_M11','b0/bE_M36','b0/bE_M48',
+                                  'bS/bS_M12','bS/bS_M24'))
+
+intSites=subset(intSites, cellType %in% c('GRANULOCYTES', 'MONOCYTES', 'BCELLS',
+                                          'NKCELLS', 'TCELLS'))
+
+## For each patient / time point combination, calculate estimators of each cell types
+
+indic <-intSites %>%
+  dplyr::group_by(patient, timePoint, cellType) %>%
+  dplyr::summarise(Chao1= round(estimateR(estAbund, index='chao')[2], 0),
+                   ACE= round(estimateR(estAbund, index='chao')[4], 0),
+                   Shannon=round(diversity(estAbund),3), 
+                   UniqueSites=length(unique(posid)),
+                   Inferred_cells=sum(estAbund),
+                   Total_reads=sum(reads)) %>% dplyr::ungroup()
+
+colnames(indic)<-c('Patient','Timepoint','CellType','Chao1','ACE','Shannon',
+                   'UniqueSites','Inferred cells','Total  Reads')
+
+#Order the patient and the cell types.
+indic$Patient=factor(indic$Patient,levels=c('WAS4','WAS5','bS/bS','WAS2','WAS7','b0/bE'))
+indic$CellType=factor(indic$CellType,
+                      levels=toupper(c('Granulocytes','Monocytes','Bcells','NKcells','Tcells')),
+                      labels=c('G','M','B','K','T'))
+indic$Timepoint=as.numeric(gsub('M','',indic$Timepoint))
+indic$Source=ifelse(indic$Patient%in%c('WAS4','WAS5','bS/bS'),'BM','MPB')
+
+
+## Add values present in the crossOverReports file
+
+options(stringsAsFactors = FALSE)
+crossOverReports <- readChar('../data/crossOverReports.tsv', file.info('../data/crossOverReports.tsv')$size)
+
+crossOverReports <- unlist(strsplit(crossOverReports, '#%'))
+crossOverReports <- unlist(lapply(crossOverReports, function(x){
+  source     <- ifelse(grepl('#source:', x), sub('\\t+$', '', str_match(x, '#source:\\s+(.+)')[2]), '')
+  cellCounts <- as.numeric(str_match_all(str_match(x, 'initialCellCounts,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  psort <- as.numeric(str_match_all(str_match(x, 'pB_postsort,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  count_psort <-as.numeric(str_match_all(str_match(x, 'postsortCount,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  VCN <-as.numeric(str_match_all(str_match(x, 'VCN,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  DNA <-as.numeric(str_match_all(str_match(x, 'DNA,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  patient    <- str_match(x, '#(\\S+)')[2]
+  timePoint  <- str_match(x, '#\\S+\\s+(\\S+)')[2]
+  t          <- gsub('\\t+\\n', '\n', substr(x, regexpr('COUNTS', x)+7, nchar(x)))
+  m          <- read.table(tc <- textConnection(t), header = TRUE, fill = TRUE, check.names = FALSE, sep='\t'); close(tc); 
+  if(nrow(m) < 5 | length(m) < 5) return(NA)
+  m <- m[1:5, 1:5]
+  r <- list()
+  r[[paste(patient, timePoint, source, sep='|')]] <- list(
+    patient   = str_match(x, '#(\\S+)\\s+(\\S+)')[2],
+    timePoint = str_match(x, '#(\\S+)\\s+(\\S+)')[3],
+    source    = source,
+    t         = t,
+    table     = m,
+    cellCount = cellCounts,
+    psort     = psort,
+    count_psort = count_psort,
+    VCN = VCN,
+    DNA = DNA)
+
+  r }), recursive = FALSE)
+
+crossOverReports <- crossOverReports[sapply(crossOverReports, is.list)]
+crossOverReports <- crossOverReports[grep(names(crossOverReports),pattern='Blood')]  
+
+# VCN
+vcn=as.data.frame(do.call(rbind,lapply(names(crossOverReports),function(x){
+                                 dat=crossOverReports[[x]]$VCN })))
+
+colnames(vcn)<-c('B','M','G','K','T')
+
+vcn$Patient=gsub('\\|.*','',names(crossOverReports))
+vcn$Timepoint=gsub("|\\|B.*|.*m", "", names(crossOverReports))
+vcn=melt(vcn,id.vars = c('Patient','Timepoint'))
+colnames(vcn)=c('Patient','Timepoint','CellType','VCN')
+
+
+# Count psort
+psc=do.call(rbind,lapply(names(crossOverReports),function(x){
+                                 dat=crossOverReports[[x]]$count_psort}))
+colnames(psc)<-c('B','M','G','K','T')
+
+dna=do.call(rbind,lapply(names(crossOverReports),function(x){
+                                 dat=crossOverReports[[x]]$DNA
+                                 }))
+colnames(dna)<-c('B','M','G','K','T')
+
+data_cross=cbind(vcn,melt(psc)$value,melt(dna)$value)
+colnames(data_cross)=c('Patient','Timepoint','CellType','VCN','PSC','DNA')
+
+
+indic=merge(indic,data_cross,by=c('Patient','Timepoint','CellType'))
+indic$key=paste0(indic$Patient,'_',indic$Timepoint)
+
+##  Chao1 Normalized
+indic$chao1_norm=ifelse(indic$VCN>1,indic$Chao1/indic$VCN,indic$Chao1 )
+
+## ACE Normalized
+indic$ACE_norm=ifelse(indic$VCN>1,indic$ACE/indic$VCN,indic$ACE )
+
+##log10 Chao1 Normalized
+indic$chao1_norm_log=log10(indic$chao1_norm)
+
+
+#############################################################
+### Other information for a given tmpt, for Granulocytes ###
+#############################################################
+
+indic_selec=subset(indic,key%in%c('WAS4_48','WAS5_55','bS/bS_24','WAS2_78','WAS7_48','b0/bE_48')
+                   & CellType=='G')
+
+## CD34
+CD34=data.frame(Patient=c('WAS4','WAS5','bS/bS','WAS2','WAS7','b0/bE'),
+                val=c(65.7,70.584,226.8,660,177.3,557.6))
+CD34$Source=ifelse(CD34$Patient%in%c('WAS4','WAS5','bS/bS'),'BM','MPB')
+colnames(CD34)=c('Patient','CD34','Source')
+
+indic_selec$CD34=CD34[match(indic_selec$Patient,CD34$Patient),'CD34']
+indic_selec$chao1_norm_div_CD34=indic_selec$chao1_norm/indic_selec$CD34
+
+## CD34 per kg
+CD34perkg=data.frame(Patient=c('WAS4','WAS5','bS/bS','WAS2','WAS7','b0/bE'),
+                     val=c(7.3,4.08,5.6,11,9,13.6))
+CD34perkg$Source=ifelse(CD34perkg$Patient%in%c('WAS4','WAS5','bS/bS'),'BM','MPB')
+colnames(CD34perkg)=c('Patient','CD34perkg','Source')
+
+indic_selec$CD34perkg=CD34perkg[match(indic_selec$Patient,CD34perkg$Patient),'CD34perkg']
+indic_selec$chao1_norm_div_CD34perkg=indic_selec$chao1_norm/indic_selec$CD34perkg
+
+##log10 Chao1 Normalized
+indic_selec$chao1_norm_log=log10(indic_selec$chao1_norm)
+
+```
+
+```{r GlobalValues, include=FALSE, message=FALSE, warning=FALSE}
+
+cells_names <- c( `G` = "Granulocytes (G)",`M` = "Monocytes (M)",`B` = "Bcells (B)",
+                  `K` = "NKcells (K)",`T` = "Tcells (T)")
+
+## Determine a general element theme for the different plots
+th=theme_bw()+
+   theme(text=element_text(family='Arial',size=23, colour='black',face='bold'),
+         panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='Arial',size=32,colour='black',face='bold'),
+         axis.text=element_text(family='Arial',size=18, colour='black',face='bold'),
+          axis.title=element_text(family='Arial',size=27, colour='black',face='bold'),
+         plot.title=element_text(family='Arial',size=32, colour='black',face='bold'),
+         legend.text=element_text(family='Arial',size=24.5, colour='black',face='bold'))
+
+th_small=theme_bw()+
+   theme(text=element_text(family='Arial',size=23, colour='black',face='bold'),
+         panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='Arial',size=32,colour='black',face='bold'),
+         axis.text=element_text(family='Arial',size=18, colour='black',face='bold'),
+         axis.title=element_text(family='Arial',size=27, colour='black',face='bold'),
+         plot.title=element_text(family='Arial',size=32, colour='black',face='bold'),
+         legend.text=element_text(family='Arial',size=24.5, colour='black',face='bold'))
+
+## Patients 
+patient_samp=c('WAS4','WAS5','bS/bS','WAS2','WAS7','b0/bE')
+
+samples=c("WAS4|m48|Blood" ,"WAS5|m55|Blood", "bS/bS|m24|Blood",
+          "WAS2|m78|Blood" ,"WAS7|m48|Blood", "b0/bE|m48|Blood")
+
+indic$Patient_name=factor(indic$Patient,levels=levels(indic$Patient),
+                         labels=c('WAS4','WAS5','\u03B2S/\u03B2S',
+                                 'WAS2','WAS7',"\u03B20/\u03B2E"))
+
+indic_selec$Patient_name=factor(indic_selec$Patient,levels=levels(indic_selec$Patient),
+                         labels=c('WAS4','WAS5','\u03B2S/\u03B2S',
+                                 'WAS2','WAS7',"\u03B20/\u03B2E"))
+```
+
+
+#### **Figure 2**
+
+```{r Fig2, echo=FALSE, warning=FALSE, fig.height=6.5, fig.width=25, dev='png', dpi=350}
+ 
+  #Fig2 - Unique Sites in a log scale
+  ggplot(data=indic,aes(x=Timepoint,y=UniqueSites,colour=Patient_name,shape=Source))+
+  geom_point(size=7)+
+  geom_line(size=0.8)+
+  facet_wrap(~CellType,nrow=1,scales='free',labeller = as_labeller(cells_names))+
+  scale_x_continuous(breaks=seq(from=10,to=80,by=10))+
+  scale_y_continuous(limits=c(min(indic$UniqueSites),max(indic$UniqueSites)),
+                     trans='log10',breaks=c(100,500,1000,5000,10000,50000))+
+  scale_shape_manual('',values=c(16,15))+
+  labs(y='Unique Sites',x='Months post gene therapy',colour='')+
+  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0)) +
+  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15),
+                                                 size = 6, linetype = 0),nrow=1),
+         shape=guide_legend(nrow=1))
+```
+
+
+#### **Figure 3A**
+
+```{r Fig3A, echo=FALSE, warning=FALSE, fig.height=7, fig.width=8, dev='png', dpi=350, out.width = "50%"}
+
+    #Fig3 A - Estimated active HSPC number (log)
+    ggplot(indic_selec, aes(x=Source,y=chao1_norm))+geom_boxplot()+
+    geom_jitter(width = 0.01, height = 0, aes(colour=Patient_name,shape=Source),size=5)+
+    scale_y_log10(limits = c(1,1e6),
+                  expand = c(0,0),breaks=10^(0:6),
+                  labels = trans_format("log10", math_format(10^.x)))+
+     scale_shape_manual('',values=c(16,15))+
+     labs(y='Est. active HSPC number (log)',x='',colour='',subtitle='')+
+     th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0),
+                     axis.text.x=element_text(family='Arial',size=22,
+                                              colour='black',face='bold'))+
+     guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15),
+                                                    size = 6, linetype = 0),byrow=T),
+            shape=guide_legend(nrow=2,byrow=TRUE))
+```
+
+
+#### **Figure 3B**
+
+```{r Fig3B, echo=FALSE,warning=FALSE, fig.height=7, fig.width=8, dev='png',dpi=350, out.width = "50%"}
+
+  #Fig3 B - Correlation between the Estimated HSPC number (log) and the corrected CD34 per kg
+  
+  ## Get the data
+  plots=list()
+  C='G'
+
+  #Filter on the patient and the Granulocyte cell type
+  indic_selec_allcell=subset(indic,key%in%c('WAS4_48','WAS5_55','bS/bS_24',
+                                            'WAS2_78','WAS7_48','b0/bE_48') 
+                             & CellType==C)
+  indic_selec_allcell$CD34perkg=CD34perkg[match(indic_selec_allcell$Patient,CD34perkg$Patient),
+                                          'CD34perkg']
+  #Correlation calcul
+  r=corr.test(indic_selec_allcell[,c('CD34perkg','chao1_norm_log')])
+
+   ## Plot
+   ggplot(indic_selec_allcell, aes(x=CD34perkg,y=chao1_norm))+ 
+   geom_point(aes(group=Patient,colour=Patient_name,shape=Source),size=7)+
+   geom_smooth(method=lm, se=TRUE,fill = "gray20",colour='black',alpha=0.07)+
+   scale_y_log10(limits = c(1,1e6), expand = c(0,0),breaks=10^(0:6),
+                 labels = trans_format("log10", math_format(10^.x)))+
+   scale_shape_manual('',values=c(16,15))+
+   labs(y=paste0('Est. active HSPC number (log)'),x='Corr. CD34+ cells / kg infused',colour='',
+       title=paste('r =',round(r$r[2],3)),
+       subtitle=paste('p =',round(r$p[2],3)))+
+  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+
+  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), 
+                                                 size = 6, linetype = 0),byrow=T),
+         shape=guide_legend(nrow=2,byrow=TRUE))
+```
+
+______________________________________________________________________
+
+#### _**Supplemental Figures**_
+______________________________________________________________________
+
+
+#### _Supplemental Figure 2_
+
+```{r SuppFig2 , echo=FALSE, warning=FALSE, fig.height=6.5, fig.width=25, dev='png',dpi=350}
+
+    #Fig S2 - Unbalanced sampling and data normalization
+
+    #(A) VCN [with a log scale]
+    ggplot(data=indic,aes(x=Timepoint,y=VCN,colour=Patient_name,shape=Source))+
+    geom_point(size=7)+
+    geom_line(aes(group=Patient),size=0.8)+
+    facet_wrap(~CellType,nrow=1,scales='free',labeller = as_labeller(cells_names))+
+    scale_x_continuous(breaks=seq(from=10,to=80,by=10))+
+    scale_y_continuous(limits=c(min(indic$VCN,na.rm = T),max(indic$VCN,na.rm = T)),
+                       trans='log10', breaks=c(0,0.05,0.1,0.2,0.4,0.6,1,2,4))+
+    scale_shape_manual('',values=c(16,15))+
+    labs(y='VCN',x='Months post gene therapy',colour='')+
+    th+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+
+    guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), 
+                                                   size = 6, linetype = 0),nrow=1),
+           shape=guide_legend(nrow=1,byrow=TRUE))
+
+    #(B) Post sort cell count 
+    ggplot(data=indic,aes(x=Timepoint,y=PSC,colour=Patient_name,shape=Source))+
+    geom_point(size=7)+
+    geom_line(aes(group=Patient),size=0.8)+
+    facet_wrap(~CellType,nrow=1,scales='free',labeller = as_labeller(cells_names))+
+    scale_x_continuous(breaks=seq(from=10,to=80,by=10))+
+    scale_y_continuous(limits=c(min(indic$PSC),max(indic$PSC)))+
+    scale_shape_manual('',values=c(16,15))+
+    labs(y=expression(post-sort~cell~count~(x10^6)),x='Months post gene therapy',colour='')+
+    th+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+
+    guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), 
+                                                   size = 6, linetype = 0),nrow=1),
+           shape=guide_legend(nrow=1,byrow=TRUE))
+
+   #(C) DNA [with a log scale]
+    ggplot(data=indic,aes(x=Timepoint,y=DNA,colour=Patient_name,shape=Source))+
+    geom_point(size=7)+
+    geom_line(aes(group=Patient),size=0.8)+
+    facet_wrap(~CellType,nrow=1,scales='free',labeller = as_labeller(cells_names))+
+    scale_x_continuous(breaks=seq(from=10,to=80,by=10))+
+    scale_y_continuous(limits=c(min(indic$DNA,na.rm = T),max(indic$DNA,na.rm = T)),
+                       trans='log10',breaks=c(5,25,50,100,250,500,1000,2500))+
+    scale_shape_manual('',values=c(16,15))+
+    labs(y='DNA (ng)',x='Months post gene therapy',colour='')+
+    th+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+
+    guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), 
+                                                   size = 6, linetype = 0),nrow=1),
+           shape=guide_legend(nrow=1,byrow=TRUE))
+
+   #(D) Input Vector [with a log scale]
+   data_all=indic
+   data_all$input=(data_all$DNA/0.0066)*data_all$VCN
+
+   ggplot(data=data_all,aes(x=Timepoint,y=input/1e3,colour=Patient_name,shape=Source))+
+   geom_point(size=7)+
+   geom_line(aes(group=Patient),size=0.8)+
+   facet_wrap(~CellType,nrow=1,scales='free',labeller = as_labeller(cells_names))+
+   scale_x_continuous(breaks=seq(from=10,to=80,by=10))+
+   scale_y_continuous(limits=c(min(data_all$input/1e3,na.rm = T),
+                               max(data_all$input/1e3,na.rm = T)),
+                      trans='log10', breaks=c(0,1,5,10,20,40,60,100,200,400))+
+   scale_shape_manual('',values=c(16,15))+
+   labs(y=expression(Input~vector~(x10^3)),x='Months post gene therapy',colour='')+
+   th+theme(legend.position='bottom',strip.text.y = element_text(angle = 0))+
+   guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), 
+                                                  size = 6, linetype = 0),nrow=1),
+          shape=guide_legend(nrow=1,byrow=TRUE))
+```
+
+
+#### _Supplemental Figure 3_
+
+```{r SuppFig3, echo=FALSE, warning=FALSE,fig.height=6.5, fig.width=25, dev='png',dpi=350}
+
+  #FigS3 - Shannon Index
+  ggplot(data=indic,aes(x=Timepoint,colour=Patient_name,y=Shannon,shape=Source))+
+  geom_point(size=7)+
+  geom_line(aes(y=Shannon,group=Patient),size=0.8)+
+  facet_wrap(~CellType,nrow=1,scales='free',labeller = as_labeller(cells_names))+
+  scale_x_continuous(breaks=seq(from=10,to=80,by=10))+
+  scale_y_continuous(limits=c(0,max(indic$Shannon)))+
+  scale_shape_manual('',values=c(16,15))+
+  labs(y='Shannon Index',x='Months post gene therapy',colour='')+
+  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0)) +
+  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), 
+                                                 size = 6, linetype = 0),nrow=1),
+         shape=guide_legend(nrow=1))
+```
+
+
+#### _Supplemental Figure 5_
+
+```{r SuppFig5, echo=FALSE,warning=FALSE, fig.height=7, fig.width=8, dev='png',dpi=350, out.width = "50%"}
+
+  #FigS5 - Estimation of active HSPC number / 10^6 infused CD34+
+  ggplot(indic_selec, aes(x=Source,y=chao1_norm_div_CD34))+geom_boxplot()+
+  geom_jitter(width = 0.01, height = 0,aes(colour=Patient_name,shape=Source),size=5)+
+  scale_shape_manual('',values=c(16,15))+
+  labs(y= expression(atop('Est. active HSPC number',paste('/',10^6,' infused CD34+'))),
+       x='',colour='',subtitle='')+
+  th_small+theme(legend.position='bottom',strip.text.y = element_text(angle = 0), 
+                 axis.text.x=element_text(family='Arial',size=22, colour='black',face='bold')) +
+  guides(colour = guide_legend(override.aes=list(shape = c(16,16,16,15,15,15), 
+                                                 size = 6, linetype = 0),byrow=T),
+         shape=guide_legend(nrow=2,byrow=TRUE))
+```
+
+
+______________________________________________________________________
+
+#### _**Supplementary Table 1**_
+______________________________________________________________________
+
+
+```{r SupTable1,echo=FALSE,fig.width=14,fig.height=20}
+
+  ## Format the data
+  indic$CellType=factor(indic$CellType,levels=c("G","M","B","K","T"))  
+  indic$Timepoint=as.character(indic$Timepoint)
+  indic$chao1_norm=round(indic$chao1_norm)
+  indic$ACE_norm=round(indic$chao1_norm)
+
+  indic=arrange(indic,Patient,Timepoint,CellType)
+  IND=indic[,c( 'Source','Patient',	'Timepoint',	'CellType','UniqueSites',
+                "Inferred cells","Total  Reads" ,'Chao1',		'chao1_norm')]
+  colnames(IND)<-c('Source','Patient',	'Time\npoint',	'Cell\nType','Unique\nSites',
+                   "Inferred\ncells","Total\nReads" ,	'Chao1',		'Chao1_norm')
+
+  ## Add the Total Values
+  n=rep('Total',nrow(intSites))
+
+  indic_TOT <-intSites %>% 
+  mutate(cell=n)%>%
+  dplyr::group_by(patient, timePoint,cell) %>%
+  dplyr::summarise(
+                   UniqueSites=length(unique(posid)),
+                   Inferred_cells=sum(estAbund),
+                   Total_reads=sum(reads)) %>% dplyr::ungroup()
+
+  colnames(indic_TOT)<-c('Patient','Timepoint','Cell Type','UniqueSites','Inferred cells','Total  Reads')
+  indic_TOT$Source=ifelse(indic_TOT$Patient%in% c( 'WAS4','WAS5','bS/bS'),'BM','MPB')
+  indic_TOT$Timepoint=gsub('M','',indic_TOT$Timepoint)
+  
+  indic_TOT$`Cell Type`='Total'
+  indic_TOT$Chao1=''
+  indic_TOT$Chao1_norm=''
+
+  indic_TOT= indic_TOT %>% dplyr::select(Source, everything())
+
+  indic_TOT$Patient=factor(indic_TOT$Patient,levels=c('WAS4','WAS5','bS/bS',
+                                                      'WAS2','WAS7','b0/bE'))
+  indic_TOT=arrange(indic_TOT,Patient)
+
+  Data=IND
+  levels(Data$`Cell\nType`)=c(levels(Data$`Cell\nType`),'Total')
+
+
+  # Insert the total values in the dataframe
+  row_num=c(seq(6,6*13,by=6),seq(6*13+5,nrow(Data)+nrow(indic_TOT),by=6))
+
+  for(j in 1:nrow(indic_TOT)){
+    Data <- InsertRow(Data, NewRow = indic_TOT[j,], RowNum = row_num[j])
+  }
+  rownames(Data)<-NULL
+
+  ### Print the values in a table.
+  knitr::kable(Data[1:113,],format='html', align = "c") %>%
+  kable_styling(c("striped", "bordered" ,"condensed"),full_width = F,font_size = 8) %>%
+  column_spec(1, bold = T, border_right = T,border_left=T) %>%
+  column_spec(2, bold = T, border_right = T) %>%
+  row_spec( 0, font_size=9) %>%
+  row_spec( cumsum(as.vector(aggregate(indic$Source,by=list(indic$Patient),length)$x)),
+            hline_after = T ) %>%
+  row_spec( row_num, bold=T) %>%
+  collapse_rows(columns = 1:3)
+```
+

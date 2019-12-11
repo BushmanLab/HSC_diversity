@@ -1,0 +1,558 @@
+---
+fontsize: 11pt
+geometry: margin=0.25in
+output:
+  html_document:
+    keep_md: no
+---
+
+```{r DataPrep, include=FALSE, eval=TRUE, warning=FALSE, message=FALSE}
+
+#### **Code for generating**
+#### **Figures 5C-D **
+#### **Supplemental Figures 10-11 **
+
+########################################################################
+######################## DATA PREPARATION ##############################
+########################################################################
+
+
+###Loading the packages
+library(plyr)
+library(tidyverse)
+library(reshape2)
+library(pander)
+library(psych)
+library(MASS)
+library(scales)
+library(gridExtra)
+library(grid)
+library(RColorBrewer)
+library(arrangements)
+library(gtable)
+
+#####################################
+### Data loading and formatting  ###
+####################################
+
+
+intSites <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
+
+
+for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
+
+
+#
+# Read in the cell sorting cross over reports which are stored in a single file with records separated with '#%'.
+# The counts table is identifiable by the key word COUNTS. 
+#
+
+options(stringsAsFactors = FALSE)
+crossOverReports <- readChar('../data/crossOverReports.tsv', file.info('../data/crossOverReports.tsv')$size)
+crossOverReports <- unlist(strsplit(crossOverReports, '#%'))
+crossOverReports <- unlist(lapply(crossOverReports, function(x){
+  source     <- ifelse(grepl('#source:', x), sub('\\t+$', '', str_match(x, '#source:\\s+(.+)')[2]), '')
+  cellCounts <- as.numeric(str_match_all(str_match(x, 'initialCellCounts,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  psort <- as.numeric(str_match_all(str_match(x, 'pB_postsort,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  count_psort <-as.numeric(str_match_all(str_match(x, 'postsortCount,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  VCN <-as.numeric(str_match_all(str_match(x, 'VCN,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  DNA <-as.numeric(str_match_all(str_match(x, 'DNA,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  patient    <- str_match(x, '#(\\S+)')[2]
+  timePoint  <- str_match(x, '#\\S+\\s+(\\S+)')[2]
+  t          <- gsub('\\t+\\n', '\n', substr(x, regexpr('COUNTS', x)+7, nchar(x)))
+  m          <- read.table(tc <- textConnection(t), header = TRUE, fill = TRUE, check.names = FALSE, sep='\t'); close(tc); 
+  if(nrow(m) < 5 | length(m) < 5) return(NA)
+  m <- m[1:5, 1:5]
+  r <- list()
+  r[[paste(patient, timePoint, source, sep='|')]] <- list(
+    patient   = str_match(x, '#(\\S+)\\s+(\\S+)')[2],
+    timePoint = str_match(x, '#(\\S+)\\s+(\\S+)')[3],
+    source    = source,
+    t         = t,
+    table     = m,
+    cellCount = cellCounts,
+    psort     = psort,
+    count_psort = count_psort,
+    VCN = VCN,
+    DNA = DNA)
+  
+  message('Read in ', names(r))
+  r
+}), recursive = FALSE)
+
+crossOverReports <- crossOverReports[sapply(crossOverReports, is.list)]
+
+#
+# Subset the resulting list to include only those reports which will be used in the study.
+#
+samples <- c('WAS4|m12|Blood','WAS4|m36|Blood','WAS4|m48|Blood','WAS4|m60|Blood',
+             'WAS5|m55|Blood',
+             'bS/bS|m24|Blood',
+             'b0/bE|m48|Blood')
+
+
+if(! all(samples %in% names(crossOverReports))) stop('All the requested crossover tables were not found.')
+crossOverReports <- crossOverReports[samples]  
+
+
+ ### proportion for each cell type
+ prop_HD=c(0.2,0.2,0.2,0.2,0.2)
+
+
+# Create a key to be used to update corrected abundances.
+intSites$timePoint=tolower(intSites$timePoint)
+intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSites$timePoint)
+
+ # Put the data in a wide format count table.
+  
+  assign(paste('liste_intSites_new_sup',0,sep=''),lapply(crossOverReports,function(x){  
+   
+    # Subset the intSite data to include only sites from a specific cell type and time point.
+    i <- which(intSites$patient==x$patient &
+               intSites$timePoint==x$timePoint &
+               toupper(intSites$cellType) %in% toupper(names(x$table)))
+    d <- intSites[i,]
+    
+    if(nrow(d) == 0) stop(paste0(x$patient, ' / ', x$timePoint, 
+                                 ' could not be found in the intSite data.'))
+    
+    message('Cell types in retrieved data subset(', x$patient, ' - ', x$timePoint, '): ',
+            paste0(unique(d$celltype), collapse=', '))
+    
+    # Replace NA gene names with 'NONE' in case a function is sensitive to NA.
+    if(length(which(is.na(d$nearestFeature))) > 0) d[which(is.na(d$nearestFeature)),]$nearestFeature <- 'NONE'
+    
+    # Reorganize the data to create an intSite / cell count table.
+    d2 <- reshape2::dcast(d, posid ~ cellType, value.var='estAbund', fun.aggregate=function(x){x[1]}, fill=0)  
+    
+    # Add missing cell types.
+    d2[names(x$table)[! toupper(names(x$table)) %in% toupper(names(d2))]] <- 0
+    
+    # Add nearest gene column.
+    d2$gene <- intSites[match(d2$posid, intSites$posid),]$nearestFeature  
+    
+    # Add inFeature column.
+    d2$inFeature <- intSites[match(d2$posid, intSites$posid),]$inFeature  
+    
+    # Reorganize the column headers to match Correction_CutData_new() input structure.
+    d2 <- d2[,c(1,grep('gene',   names(d2), ignore.case = TRUE),
+                 grep('BCELL',  names(d2), ignore.case = TRUE),
+                 grep('MONO',   names(d2), ignore.case = TRUE),
+                 grep('GRANULO', names(d2), ignore.case = TRUE),
+                 grep('NKCELL', names(d2), ignore.case = TRUE),
+                 grep('TCELL',  names(d2), ignore.case = TRUE),
+                 grep('inFeature',  names(d2), ignore.case = TRUE)
+                )]
+    
+    # Create a cell count column.
+    d2$cellCount <-  apply(d2, 1, function(x){ sum(as.integer(x[3:7])) })
+    
+    # Rename the input columns.
+    names(d2)=c("integrationSite", "gene", "Bcells", "Monocytes", "Granulocytes", "NKcells", "Tcells","inFeature", "cellCount")
+    
+    d2$integrationSite=as.character(d2$integrationSite)
+    d2$gene=as.character(d2$gene)
+    d2$key <- paste(c(x$patient, x$timePoint,x$source),collapse = "|") 
+    intSites_new=d2
+  
+    return(intSites_new)
+    } ))
+  
+
+  # Gather all the data sup0 (without threshold) in a unique dataframe.
+  intSites_new_concat_sup0=do.call(rbind,liste_intSites_new_sup0)
+  
+# ------------------------------------------------------------------- #
+  
+  #########################
+  ## Apply the abundance threshold ##
+  #########################
+  ### ****** Supplemental Methods 4.1 ******### 
+  
+### Get the IS that had 6 or more cells for a cell type k at the tmpt.
+  
+  list_intSites_th_Initial=list()
+
+  for(P in samples){
+  
+  pat=P
+  liste=liste_intSites_new_sup0[pat]
+  
+  #Find the IS matching the criteria by patient/tmpt.
+  IS=do.call(rbind, lapply(pat, function(s){
+    L=liste[[s]]
+    L$integrationSite=as.character(L$integrationSite)
+    IS=subset(L,L$Bcells >=6| L$Monocytes >=6 | L$Granulocytes >=6 | L$NKcells >=6 | L$Tcells >=6)
+    print(s)
+    print(nrow(IS))
+    IS
+  }))
+  
+  IS_to_keep=unique(IS$integrationSite)
+  
+  #Apply the filter for the tmpt
+  list_intSites_th_Initial[pat]=lapply(liste, function(x) subset(x,integrationSite%in%IS_to_keep))
+  
+  }
+
+  # Gather all the data with the threshold in a unique dataframe.
+  intSites_threshold_Initial=do.call(rbind,list_intSites_th_Initial)
+  
+  
+  # ------------------------------------------------------------------- #
+
+  #########################
+  ## Apply the Correction ##
+  #########################
+  ### ****** Supplemental Methods 4.2 and 4.3 ******### 
+  
+ #load the correction function.  
+ source('./AbundanceCorrection_2steps_Normalization_Steps.R')
+  
+  
+ list_intSites_th_Corrected=lapply(crossOverReports[samples],function(cross){  
+    
+    # Subset the intSites_threshold_Initial data to include only sites from a specific cell type and time point.
+    i <- which(intSites_threshold_Initial$key == paste(c(cross$patient, cross$timePoint, cross$source),collapse = "|")) 
+    df <- intSites_threshold_Initial[i,]
+    
+    #Use the correction function.
+    correction=Correction_2steps_Normalization(x=cross,d2=df)
+    data_corrected_final=correction$data_corrected_final
+
+    # Rename the returned data frame to match the cell types in the intSites data frame.
+    n <- c("integrationSite", "gene", "Bcells_corrected", "Monocytes_corrected", "Granulocytes_corrected",
+           "NKcells_corrected", "Tcells_corrected")
+    names(data_corrected_final) <- n
+  
+    intSites_new =dplyr::right_join(df,data_corrected_final,by=c('integrationSite','gene') )
+    intSites_new = mutate(intSites_new,cellCount_corrected=rowSums(intSites_new[,grepl(names(intSites_new),
+                                                                                       pattern='_corrected$')]))
+  
+    # Add proportions.
+    prop = (intSites_new[,grepl("s_corrected",names(intSites_new))])/
+      rowSums((intSites_new[,grepl("_corrected",names(intSites_new))]))
+    names(prop) = c("Bcells_corrected_prop", "Monocytes_corrected_prop", "Granulocytes_corrected_prop",
+                    "NKcells_corrected_prop", "Tcells_corrected_prop")
+    intSites_new = cbind(intSites_new,prop)
+    
+    return(intSites_new)
+
+  } ) 
+
+# Gather all the data with the threshold and corrected in a unique dataframe.
+ intSites_threshold=do.call(rbind,list_intSites_th_Corrected)
+ 
+```
+
+
+```{r GlobalParameters, echo=FALSE, message=FALSE, warning=FALSE}
+
+##################################################################### 
+####################### GLOBAL PARAMETERS ###########################
+##################################################################### 
+
+# All Patient
+keys=unique(intSites_threshold_Initial$key)
+keys_lab=c(expression(atop(WAS4,m12)),expression(atop(WAS4,m48)),expression(atop(WAS5,m55)),
+           expression(atop(beta*S/beta*S,m24)),expression(atop(beta*0/beta*E,m48)))
+
+samples= c('WAS4|m48|Blood',
+             'WAS5|m55|Blood',
+             'bS/bS|m24|Blood',
+             'b0/bE|m48|Blood')
+
+samples_lab=c(expression('WAS4~m48'),expression('WAS5~m55'),expression('beta*S/beta*S~m24'),
+              expression('beta*0/beta*E~m48'))
+
+# Determine general element themes for the plots:
+th_small=theme_bw()+
+  theme(text=element_text(family='Arial',size=26, colour='black',face='bold'),
+        panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+        strip.background=element_rect(fill=NA, color=NA),
+        strip.text=element_text(family='Arial',size=34,colour='black',face='bold'),
+        axis.text=element_text(family='Arial',size=25, colour='black',face='bold'),
+        plot.title=element_text(family='Arial',size=27, colour='black',face='bold'))
+
+celltype=c('Granulocytes_corrected','Monocytes_corrected','Bcells_corrected',
+           'NKcells_corrected','Tcells_corrected')
+
+```
+
+
+#### _**Supp. Figure 10A : Pearson correlation**_
+
+```{r SuppFig10A, echo=FALSE, eval=TRUE, fig.width=20, fig.height=5.5, warning=FALSE, message=FALSE}
+
+  #FigS10 (A) - Pearson correlation between combination of 2 lineages
+  
+  ## Get the data
+  corr_plot=list()
+
+  for(i in 1:length(samples)){
+    pat=samples[i]
+    data=list_intSites_th_Corrected[[pat]]
+    correlation=cor(data[,c(13,12,11,14,15)])
+
+  #Only keep  half of the correlations (symetric matrix).
+  cormat=correlation
+  cormat[lower.tri(cormat)] <- NA
+
+  #Format the data.
+  melted_cormat <- melt(cormat, na.rm = TRUE)
+  melted_cormat$Var1=factor(melted_cormat$Var1,levels=celltype,labels=c('G','M','B','K','T'))
+  melted_cormat$Var2=factor(melted_cormat$Var2,levels=celltype,labels=c('G','M','B','K','T'))
+  
+    
+  names=gsub('\\|Blood','',pat)
+  names=gsub('\\|',' ',names)
+  names=gsub('b',"\u03B2",names)
+
+  ## Heatmap
+ 
+  g=ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+    geom_tile(color = "white")+
+    scale_fill_gradientn(colours = brewer.pal(10,"RdBu"),limit=c(-1,1),
+                         breaks=c(-1,-0.5,0,0.5,1))+
+    labs(title=names,x='',y='',fill='')+
+    th_small+ theme(plot.title = element_text(hjust = 0.5))+
+    coord_fixed()
+
+  corr_plot[[pat]]=g
+  }
+
+  ## Print all the heatmaps in the same panel. 
+  grid.arrange(grobs=corr_plot,nrow=1)
+ 
+```
+
+
+#### **Figure 5CD & _Supp. figure 10B_ : Lineage bias analysis**
+
+```{r Fig5CD&SuppFig10B, echo=FALSE, fig.width=24, fig.height=8, warning=FALSE,message=FALSE}
+  
+ #Fig5CD &S10B - Lineage bias analysis
+
+ ## Get the data
+ A=B=a=b=list()
+
+ #Create and select combinations of cell types.
+ combi=permutations(x = celltype, freq = c(2, 2, 2,2,2), k = 2)
+ combi=t(combi)
+ indic=indic_tot=list()
+ combi=combi[,c(2,5,3,4,14,15,24)]
+
+  for (i in 1:ncol(combi)){
+  
+  c1=combi[1,i]
+  c2=combi[2,i]
+  
+  
+    n_c1=substr(c1, 1,1)
+    if (c1 =="NKcells_corrected"){n_c1='K'}
+    
+    n_c2=substr(c2, 1,1)
+    if (c2 =="NKcells_corrected"){n_c2='K'}
+
+   data_comb=do.call(rbind,lapply(1:4,function(x){
+     
+    p=samples[x]
+    data_pat=subset(list_intSites_th_Corrected[[p]])
+
+    data=data_pat[,c('integrationSite',c1,c2)]
+    colnames(data)=c('IS','c1','c2')
+    data_sub=subset(data,data$c1>0|data$c2>0)
+  
+    # correlation study
+    r_cut=round(cor(data_sub$c1,data_sub$c2),3)
+  
+    indic[[p]]=c(c1,c2,r_cut)
+  
+    #Bias plot on the data with threshold
+    data_thr_study=data_sub
+    data_thr_study$quotient=data_thr_study$c2/data_thr_study$c1
+    data_thr_study$cat=cut(data_thr_study$quotient,
+                         breaks=c(-Inf,0.1,0.2,0.33,0.66,1.5,3,5,10,Inf),
+                         right=T,include.lowest = TRUE)
+    data_thr_study$pat=p
+    data_thr_study
+   }))
+   data_comb$pat=factor(data_comb$pat,levels=samples,labels = samples_lab)
+
+  #Annotation to add under the plot
+  text_low <- grobTree(textGrob(paste0(n_c1,'\nbias'), x=0.04,  y=-0.28, 
+                                gp=gpar(fontsize=30, fontface="bold")))
+  text_high <- grobTree(textGrob(paste0(n_c2,'\nbias'), x=0.96,  y=-0.28, 
+                                 gp=gpar(fontsize=30, fontface="bold")))
+  bal <- grobTree(textGrob('Bal.', x=0.5,  y=-0.28, 
+                           gp=gpar(fontsize=30, fontface="bold")))
+  Larrow<-grobTree(linesGrob(x = unit(c(0.15, 0.4), "npc"),
+                             y = unit(c(-0.28, -0.28), "npc"),
+                             default.units = "npc",
+                             arrow=arrow(type="open", ends="first", length=unit(3,"mm")),
+                             gp=gpar(col="black", lwd=3)))
+  Rarrow<-grobTree(linesGrob(x = unit(c(0.6, 0.85), "npc"),
+                             y = unit(c(-0.28, -0.28), "npc"),
+                             default.units = "npc",
+                             arrow=arrow(type="open", ends="last",length=unit(3,"mm")),
+                             gp=gpar(col="black", lwd=3)))
+  
+  ## Plot
+  G=ggplot( data_comb,aes(x=cat))+
+  geom_bar()+
+  facet_wrap(~pat,nrow=1,labeller = label_parsed,scales='free')+
+  labs(y='IS number',x='')+
+  scale_x_discrete(drop=FALSE,breaks=levels(data_comb$cat),
+                   labels= c(">10", ">5", ">3",">1.5","1",">1.5",">3",">5",">10"))+
+  scale_y_continuous(breaks=c(0,seq(50,400,by=50)))+
+  th_small+theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 0.5)
+                 ,plot.margin = unit(c(1,1,5,1), "lines"))
+
+
+  ## Add the custom annotation
+  G= G+ annotation_custom(text_low)+
+  annotation_custom(text_high)+
+  annotation_custom(bal)+
+  annotation_custom(Larrow)+
+  annotation_custom(Rarrow)+
+  coord_cartesian(clip = "off")
+  
+  ## Print the plot with the title 
+  grid.arrange(G,top=textGrob(paste(gsub('_.*','',c1),'vs',gsub('_.*','',c2)),
+                              gp=gpar(fontsize=38,font=2)))
+}
+
+```
+
+
+#### _**Supp. Figure 11A : Longitudinal study - Pearson correlation**_
+
+```{r SuppFig11A, echo=FALSE, warning=FALSE,out.width = "50%"}
+
+  #FigS11 - the 4 tmpts of WAS4 are pooled.
+
+  ###################
+  ## Pool the data ##
+  ###################
+  
+  ### Creation of the pooled data 
+
+    #Subset on the WAS4 tmpts
+    pat=keys[grepl(keys,pattern='WAS4')]
+    data=subset(intSites_threshold,key%in%pat)
+    
+    #Filter on the WAS4 m48 IS
+    m48=filter(data,key==samples[1])
+    data=subset(intSites_threshold,integrationSite%in%m48$integrationSite)
+    data_pool_pat=aggregate( .~ integrationSite+gene,
+                             data[,c('integrationSite','gene',celltype)],sum)
+    data_pool_pat$key='WAS4 pooled'
+
+  ## (A) Pearson correlation
+    
+   correlation=cor(data_pool_pat[,celltype])
+
+   #Only keep  half of the correlations (symetric matrix).
+   cormat=correlation
+   cormat[lower.tri(cormat)] <- NA
+
+   #Format the data.
+   melted_cormat <- melt(cormat, na.rm = TRUE)
+   melted_cormat$Var1=factor(melted_cormat$Var1,levels=celltype,labels=c('G','M','B','K','T'))
+   melted_cormat$Var2=factor(melted_cormat$Var2,levels=celltype,labels=c('G','M','B','K','T'))
+  
+
+  ## Heatmap
+   g=ggplot(data = melted_cormat, aes(Var2, Var1, fill = value))+
+    geom_tile(color = "white")+
+    scale_fill_gradientn(colours = brewer.pal(10,"RdBu"),limit=c(-1,1),
+                         breaks=c(-1,-0.5,0,0.5,1))+
+    labs(title=data_pool_pat$key,x='',y='',fill='')+
+    th_small+ theme(plot.title = element_text(hjust = 0.5))+
+    coord_fixed()
+  
+  g
+```
+  
+  
+#### _**Supp. Figure 11BC : Longitudinal study - lineage bias**_
+
+```{r SuppFig11BC, echo=FALSE,fig.width=11,fig.height=9,warning=FALSE,message=FALSE,out.width = "50%" }  
+  
+ combi=permutations(x = celltype, freq = c(2, 2, 2,2,2), k = 2)
+ combi=t(combi)
+ indic=indic_tot=list()
+ combi=combi[,c(2,5)]
+
+  for (i in 1:ncol(combi)){
+  
+  c1=combi[1,i]
+  c2=combi[2,i]
+  
+  
+    n_c1=substr(c1, 1,1)
+    if (c1 =="NKcells_corrected"){n_c1='K'}
+    
+    n_c2=substr(c2, 1,1)
+    if (c2 =="NKcells_corrected"){n_c2='K'}
+
+   
+  
+    data_pat=subset(data_pool_pat)
+
+    data=data_pat[,c('integrationSite',c1,c2)]
+    colnames(data)=c('IS','c1','c2')
+    data_sub=subset(data,data$c1>0|data$c2>0)
+  
+    # correlation study
+    r_cut=round(cor(data_sub$c1,data_sub$c2),3)
+  
+
+  
+    #Bias plot on the data with threshold
+  
+    data_thr_study=data_sub
+    data_thr_study$quotient=data_thr_study$c2/data_thr_study$c1
+    data_thr_study$cat=cut(data_thr_study$quotient,
+                         breaks=c(-Inf,0.1,0.2,0.33,0.66,1.5,3,5,10,Inf),right=T,include.lowest = TRUE)
+    data_thr_study$pat='WAS4~pooled'
+    data_comb=data_thr_study
+
+
+
+text_low <- grobTree(textGrob(paste0(n_c1,'\nbias'), x=0.04,  y=-0.28, gp=gpar(fontsize=30, fontface="bold")))
+text_high <- grobTree(textGrob(paste0(n_c2,'\nbias'), x=0.96,  y=-0.28, gp=gpar(fontsize=30, fontface="bold")))
+bal <- grobTree(textGrob('Bal.', x=0.5,  y=-0.28, gp=gpar(fontsize=30, fontface="bold")))
+Larrow<-grobTree(linesGrob(x = unit(c(0.15, 0.4), "npc"),
+               y = unit(c(-0.28, -0.28), "npc"),
+               default.units = "npc",arrow=arrow(type="open", ends="first", length=unit(3,"mm")),gp=gpar(col="black", lwd=3)))
+Rarrow<-grobTree(linesGrob(x = unit(c(0.6, 0.85), "npc"),
+               y = unit(c(-0.28, -0.28), "npc"),
+               default.units = "npc",arrow=arrow(type="open", ends="last", length=unit(3,"mm")),gp=gpar(col="black", lwd=3)))
+  
+
+G=ggplot( data_comb,aes(x=cat))+
+  geom_bar()+
+  facet_wrap(~pat,nrow=1,labeller = label_parsed,scales='free')+
+  labs(y='IS number',x='')+
+  scale_x_discrete(drop=FALSE,breaks=levels(data_comb$cat),
+                   labels= c(">10", ">5", ">3",">1.5","1",">1.5",">3",">5",">10"))+
+  scale_y_continuous(breaks=c(0,seq(50,500,by=50)))+
+  th_small+theme(axis.text.x = element_text(angle = 90, vjust = 0.5,hjust = 0.5)
+                 ,plot.margin = unit(c(1,1,5,1), "lines"))
+
+
+# Plot
+G= G+ annotation_custom(text_low)+
+  annotation_custom(text_high)+
+  annotation_custom(bal)+
+  annotation_custom(Larrow)+
+  annotation_custom(Rarrow)+
+  coord_cartesian(clip = "off")
+  
+  grid.arrange(G,top=textGrob(paste(gsub('_.*','',c1),'vs',gsub('_.*','',c2)),gp=gpar(fontsize=38,font=2)))
+}
+```
+
+
+

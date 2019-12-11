@@ -1,0 +1,302 @@
+---
+fontsize: 11pt
+geometry: margin=0.25in
+output:
+  html_document:
+    keep_md: no
+---
+
+```{r DataPrep, echo=FALSE, eval=TRUE,warning=FALSE,message=FALSE}
+#### **Code for generating**
+#### **Supplemental Figures 7 **
+### ****** Abundance threshold and Technical Replicates Supplemental Methods 4.1 ******### 
+
+########################################################################
+######################## DATA PREPARATION ##############################
+########################################################################
+
+###Loading the packages
+library(plyr)
+library(tidyverse) 
+library(reshape2)
+library(lazyeval)
+library(psych)
+library(MASS)
+library(scales)
+library(gridExtra)
+library(grid)
+library(knitr)
+library(gtools)
+library(gtable)
+
+
+#####################################
+### Data loading and formatting  ###
+####################################
+
+
+intSites_original <- read.table(gzfile('../data/intSites.noMergedSamples.csv.gz'), sep = ',', header = TRUE)
+
+intSites <- data.frame(intSites_original) %>%
+            dplyr::group_by(sampleName, posid) %>%
+            dplyr::mutate(estAbund = n_distinct(paste(start, end))) %>%
+            dplyr::mutate(reads = sum(reads)) %>%
+            dplyr::slice(1) %>%
+            GenomicRanges::makeGRangesFromDataFrame(keep.extra.columns = TRUE)
+
+intSites=data.frame(intSites@elementMetadata)
+
+
+ for(i in c('estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
+ intSites$cellType=factor(intSites$cellType,levels=levels(intSites$cellType),
+                          labels=c( "Bcells","Granulocytes" ,
+                                    "Monocytes", "NKcells","Tcells" )) 
+
+
+intSites$timePoint=tolower(intSites$timePoint)
+intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSites$timePoint)
+
+```
+
+```{r GlobalParameters,  echo=FALSE, message=FALSE, warning=FALSE}
+
+#####################################################################  
+####################### GLOBAL PARAMETERS ###########################
+##################################################################### 
+
+celltype=c( "Granulocytes", "Monocytes", "Bcells", "NKcells", "Tcells")
+
+# Determine general element themes for the plots:
+
+th_small=theme_bw()+
+   theme(text=element_text(family='Arial',size=36, colour='black',face='bold'),
+         panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='Arial',size=50,colour='black',face='bold'),
+         axis.text=element_text(family='Arial',size=35, colour='black',face='bold'),
+         plot.title=element_text(family='Arial',size=50, colour='black',face='bold'),
+         legend.text=element_text(family='Arial',size=36 ,colour='black',face='bold'))
+
+# Fix the colors and order of all the possible clusters:
+colors <- c(GMBKT='mediumorchid4',GMKT='darkorchid',GMBT='mediumpurple4',GMBK='mediumpurple',
+            GBKT='magenta4',MBKT='hotpink4',
+            GMB='forestgreen',GMK='deepskyblue3',GMT='thistle4',GBT='purple1',GBK='aquamarine3',GKT='thistle3',
+            MBT='sienna3',MBK='honeydew3',MKT='lightpink4',BKT='coral2',
+            MB='cornsilk3',MK='plum3',GB='green3',GK='cadetblue4',GM='deepskyblue4',GT='darkslateblue',MT='red4',
+            BK='lightseagreen',BT='darkorange2',KT='hotpink3',
+            T='red3',B='lightgoldenrod',K='turquoise2',G='royalblue4',M='gray22')
+
+```
+  
+  
+#### _**Supp. Figure 7A : Technical Replicates correlation**_
+
+```{r SuppFig7A, echo=FALSE, warning=FALSE,message=FALSE,fig.width=30,fig.height=12.5}
+
+  #FigS7 (A) - Technical Replicates correlation
+
+  #Select the patient and the threshold
+  patient='WAS4'
+  tmpt='m48'
+ 
+  data=do.call(rbind,lapply(celltype,function(cellfilter){
+    
+  # Select the data
+  i <- which(intSites$patient==patient & intSites$timePoint==tmpt 
+             & intSites$cellType%in%cellfilter)
+  d <- intSites[i,]
+
+  ## Get the biological replicates and select the 1st
+  d_filt=subset(d,d$cellType==cellfilter)
+  rep=unique(d_filt$GTSP)
+  d=subset(d,d$GTSP==rep[1])
+
+  ## Get the technical replicates
+  tec_repl=unique(d$sampleName)
+  n=length(tec_repl)
+
+  #order the technical replicates by their numbers
+  order=order(as.numeric(gsub('.*-','',tec_repl)))
+  tec_repl=tec_repl[order]         
+         
+  #split them in two groups   
+  g1=1:(n/2)
+  g2=((n/2)+1):n
+  vec_part1=d[d$sampleName%in%tec_repl[g1],]
+  vec_part2=d[d$sampleName%in%tec_repl[g2],]
+  
+  
+  # Reorganize the data to create an intSite / cell count table. 
+      
+    #GROUP 1
+    un <- reshape2::dcast(vec_part1, posid ~ cellType , value.var='estAbund',
+                          fun.aggregate=function(x){sum(x)}, fill=0)  
+      
+    #GROUP 2
+    de <- reshape2::dcast(vec_part2, posid ~ cellType , value.var='estAbund',
+                          fun.aggregate=function(x){sum(x)}, fill=0)  
+      
+    ###############################
+    # Apply Threshold to the data # 
+    ###############################
+      
+    #define the abundance threshold
+    thresh_b=6
+  
+    #Sum to obtain the total abundance of the cell studied by IS
+    data_all_regroup=rbind(un,de)
+    data_all=aggregate(data_all_regroup[,2],by=list(data_all_regroup$posid),sum)
+    
+    #in case there are not enough cells 
+      if(max(data_all$x)<thresh_b) {
+       thresh_b=max(data_all$x)
+       cat('\n ')
+       cat('** ! Not enough cells, new threshold =',thresh_b,'**')
+       cat('\n ')
+     }
+    
+    #Select the IS that have >= thresh_b cell studied, all replicates aggregated.
+    data_all_threshold=filter(data_all,x>=thresh_b)
+    IS_selected=unique( data_all_threshold$Group.1)
+      
+  # --- Data total with threshold in color:
+ 
+    ########################################################### 
+    ## Correlation study between the two groups of tec. rep. ##  
+    ########################################################### 
+      
+    data_plot=merge(un,de,all=TRUE,by='posid')
+    data_plot[is.na(data_plot)]<-0
+    data_plot$filter=factor(ifelse(data_plot$posid%in%IS_selected,1,0),
+                            levels=c(0,1),
+                            labels=c(paste('Ab. <',thresh_b),paste('Ab. >=',thresh_b)))
+    colnames(data_plot)=c('IS','celltype.x','celltype.y','filter')
+    data_plot$ab_tot=data_plot$celltype.x+data_plot$celltype.y
+    
+
+    #get the data with threshold
+    cut=data_plot[data_plot$filter==paste('Ab. >=',thresh_b),]
+    r=round(cor(cut$celltype.x,cut$celltype.y),3)
+    data_plot$r=r
+    data_plot$cell=cellfilter
+    data_plot
+  }))   
+    
+  ## Scatter plot comparing the 2 groups of tec. rep
+  data$cell=factor(data$cell,levels=celltype,labels = paste0('bold(',celltype,')'))
+  data$wrap=paste0('bold(NULL[r==~',data$r,'])')
+  
+  a=ggplot(data,aes(x=celltype.x,y=celltype.y,color=filter))+geom_count()+
+    facet_wrap(~cell+wrap,nrow=1,scales='free',labeller = label_parsed)+
+    labs(x='Replicates Group 1',y='Replicates Group 2')+
+    th_small+theme(aspect.ratio=1,legend.position='right')+
+    guides(colour=guide_legend(title='',override.aes =list(size=10),nrow=2,byrow=TRUE,order=1),
+           size=guide_legend(nrow=2,byrow=TRUE,order=2))+
+    scale_size_continuous(breaks = round,range=c(3, 15))
+  
+   print(a)
+```
+
+
+#### _**Supp. Figure 7B : Technical Replicates sharing**_
+  
+```{r SuppFig7B, echo=FALSE, warning=FALSE, message=FALSE, fig.width=30,fig.height=10}
+
+  samples <- c('WAS4|m48|Blood',
+               'WAS5|m55|Blood',
+               'bS/bS|m24|Blood',
+               'b0/bE|m48|Blood')
+
+samples_lab_row=c(expression('WAS4~m48'),expression('WAS5~m55'),
+                  expression('beta*S/beta*S~m24'),expression('beta*0/beta*E~m48'))
+
+   cellFilt=celltype
+   info=c()
+ 
+  data=do.call(rbind,lapply(samples,function(x){
+  
+  patient=gsub("\\|.*",'',x)
+  tmpt=paste0('m',gsub("|\\|B.*|.*m",'',x))
+
+  for (cellfilter in cellFilt) {
+  
+  # Select the data
+  i <- which(intSites$patient==patient & intSites$timePoint==tmpt 
+             & intSites$cellType%in%cellfilter)
+  d <- intSites[i,]
+
+  ## Get the biological replicates and select the 1st
+  d_filt=subset(d,d$cellType==cellfilter)
+  rep=unique(d_filt$GTSP)
+  d=subset(d,d$GTSP==rep[1])
+
+  ## Get the technical replicates
+  tec_repl=unique(d$sampleName)
+  n=length(tec_repl)
+
+  #order the technical replicates by their numbers
+  order=order(as.numeric(gsub('.*-','',tec_repl)))
+  tec_repl=tec_repl[order]         
+         
+  #split them in two groups   
+  g1=1:(n/2)
+  g2=((n/2)+1):n
+  vec_part1=d[d$sampleName%in%tec_repl[g1],]
+  vec_part2=d[d$sampleName%in%tec_repl[g2],]
+  
+  
+  # Reorganize the data to create an intSite / cell count table. 
+      
+    #GROUP 1
+    un <- reshape2::dcast(vec_part1, posid ~ cellType , value.var='estAbund',
+                          fun.aggregate=function(x){sum(x)}, fill=0)  
+    #GROUP 2
+    de <- reshape2::dcast(vec_part2, posid ~ cellType , value.var='estAbund',
+                          fun.aggregate=function(x){sum(x)}, fill=0)  
+    #Sum to obtain the total abundance of the cell studied by IS
+    data_all_regroup=rbind(un,de)
+    data_all=aggregate(data_all_regroup[,2],by=list(data_all_regroup$posid),sum)
+
+   #Loop on different thresholds
+   for (thresh_bar in 1:10){
+ 
+    data_all_threshold=filter(data_all,x>=thresh_bar)
+    IS_selected=unique( data_all_threshold$Group.1)
+    nb_IS=length(IS_selected)
+   
+    #IS sharing 
+    unf=filter(un,posid %in% IS_selected)
+    def=filter(de,posid %in% IS_selected)
+    
+    shared= intersect(unf$posid,def$posid)
+    shared_percent= round(length(shared)/nb_IS,2)
+
+    info=rbind(info,c(x,cellfilter,thresh_bar,shared_percent))
+    
+   }
+  }
+ 
+  info=as.data.frame(info)
+  colnames(info)<- c('key','cellType','threshold','sharing')
+  info$sharing=as.numeric(as.character(info$sharing))
+  info$threshold=as.numeric(as.character(info$threshold))
+  info$cellType=factor(info$cellType,levels=celltype,labels=c('G','M','B','K','T'))
+  info  
+  }))
+
+ #Order the patients.
+ data$key=factor(data$key,levels=samples,labels = samples_lab_row)
+
+  ##Plot
+  G=ggplot(data=data,aes(x=threshold,y=sharing,colour=cellType))+
+    geom_line(size=2)+geom_point(size=4)+
+    facet_wrap(~key,scales='free_x',nrow=1,labeller = label_parsed) +
+    scale_x_continuous(limits = c(1, 10),breaks = seq(1,10, by = 1))+
+    scale_y_continuous(labels = scales::percent)+
+    geom_hline(yintercept=0.97, color='black', size=1.5,alpha=0.5,linetype='dotted')+
+    geom_vline(xintercept=6, color='black', size=1.5,alpha=0.5,linetype='dotted')+
+    labs(colour='',x='Abundance threshold',y='Replicates sharing')+
+    scale_color_manual(values=colors)+th_small
+  
+   print(G)
+```

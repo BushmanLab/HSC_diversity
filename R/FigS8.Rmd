@@ -1,0 +1,212 @@
+---
+output: html_document
+---
+
+```{r DataPrep, echo=FALSE, eval=TRUE, include=FALSE}
+
+#### **Code for generating**
+#### **Supplemental Figures 8 **
+### ****** Abundance threshold and Biological Replicates Supplemental Methods 4.1 ******### 
+
+########################################################################
+######################## DATA PREPARATION ##############################
+########################################################################
+
+
+###Loading the packages
+library(plyr)
+library(tidyverse)
+library(reshape2)
+library(lazyeval)
+library(psych)
+library(MASS)
+library(scales)
+library(gridExtra)
+library(grid)
+library(knitr)
+library(gtools)
+
+
+##################################
+### Data loading and formatting  ###
+#################################
+
+intSites <- read.table(gzfile('../data/intSites.noMergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
+
+for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
+
+intSites$timePoint=tolower(intSites$timePoint)
+intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSites$timePoint)
+
+
+celltype=c( "GRANULOCYTES","MONOCYTES","BCELLS","NKCELLS","TCELLS")
+
+## Filter the data on the patient WAS4 at the time point m48
+i <- which(intSites$patient=='WAS4' & intSites$timePoint=='m48' & toupper(intSites$cellType) %in% celltype)
+d <- intSites[i,]
+
+## Get the biological replicates 
+d_neutro=subset(d,d$cellType=='GRANULOCYTES')
+rep=unique(d_neutro$GTSP)
+
+
+## Create a df by bio. rep.
+
+for (v in 1:length(rep)){
+  
+r=rep[v]
+d_rep=subset(d,d$GTSP==r)
+
+# Reorganize the data to create an intSite / cell count table.
+d2 <- reshape2::dcast(d_rep, posid ~ cellType , value.var='estAbund', fun.aggregate=function(x){sum(x)}, fill=0)  
+colnames(d2)<-c('posid','G')
+assign(paste0('rep_',v),d2)  
+}
+
+
+## Regroup the values to count by posid the nb of G cells by bio. rep.
+all=rbind(rep_1, rep_2, rep_3)
+IS=unique(all$posid)
+df=as.data.frame(IS)
+df$rep1=ifelse(df$IS%in%rep_1$posid,1,0)
+df$rep2=ifelse(df$IS%in%rep_2$posid,1,0)
+df$rep3=ifelse(df$IS%in%rep_3$posid,1,0)
+df$n <- sample(1:nrow(df))
+colnames(df)=c('IS','rep1','rep2','rep3','n')
+
+
+data_tot=df
+data_tot$nb_bio=rowSums(data_tot[,grepl(names(data_tot),pattern='rep')])
+data_tot=data_tot[,c('IS','nb_bio')]
+
+cellCount_aggregate=aggregate(all$G,by=list(all$posid),sum)
+
+# data frame with 1 posid per row
+# gives the nb of bio. rep., the G cells abundance and relative abundance 
+data_tot=merge(data_tot,cellCount_aggregate,by.x='IS',by.y='Group.1')
+colnames(data_tot)=c('IS','nb_bio','abundance_celltype')
+data_tot$abundance_celltype_relative=data_tot$abundance_celltype/sum(data_tot$abundance_celltype)
+
+```
+
+
+```{r GlobalParameters,  echo=FALSE, message=FALSE, warning=FALSE}
+
+##################################################################### 
+####################### GLOBAL PARAMETERS ###########################
+##################################################################### 
+
+  # Determine general element themes for the plots:
+  th_small=theme_bw()+
+   theme(text=element_text(family='Arial',size=22, colour='black',face='bold'),
+         panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='Arial',size=24,colour='black',face='bold'),
+         axis.text=element_text(family='Arial',size=24, colour='black',face='bold'),
+         axis.title=element_text(family='Arial',size=26, colour='black',face='bold'),
+         plot.title=element_text(family='Arial',size=34, colour='black',face='bold'),
+         legend.text=element_text(family='Arial',size=23, colour='black',face='bold'))
+
+```
+
+#### _**Supp. Figure 8B : Biological Replicates sharing**_
+
+
+```{r SuppFig8B, echo=FALSE, warning=FALSE,message=FALSE,fig.width=16,fig.height=6.5}
+
+  #FigS8 (B) - Biological Replicates sharing
+  
+  #Initialisation
+  G=list()
+  nb_IS=nb_IS_3=nb_IS_2=c()
+  ab_min=ab_min_rel=c()
+
+  col=c('1'="#F8766D" ,'2'="#7CAE00",'3'= "#00BFC4" ,'4'="#C77CFF",'5'= "#D39200")
+  cellfilter='Granulocytes'
+
+  ## Select a maximal threshold
+  thresh_max=10
+
+  #in case the max. threshold is too high
+  if(max(data_tot$abundance_celltype)<thresh_max){
+  thresh_max=max(data_tot$abundance_celltype)
+  }
+
+  ## Get the data and values needed for each threshold studied 
+  for(s in 1:thresh_max){
+  
+  # IS Selection for each bio. replicate
+  IS1=as.character(rep_1$posid[rep_1$G>=s])
+  IS2=as.character(rep_2$posid[rep_2$G>=s])
+  IS3=as.character(rep_3$posid[rep_3$G>=s])
+  
+  IS_to_keep=unique(c(IS1,IS2,IS3))
+  
+  # Apply the filter according the threshold s
+  data_tot_cut=filter(data_tot,IS %in% IS_to_keep)
+  
+  # Nb of IS with the threshold present, present in all the 3 bio.rep, present in 2 bio. rep.
+  nb_IS[s]=nrow(data_tot_cut)
+  nb_IS_3[s]=nrow(subset(data_tot_cut,data_tot_cut$nb_bio==3))
+  nb_IS_2[s]=nrow(subset(data_tot_cut,data_tot_cut$nb_bio==2))
+  
+  # Minimum abundance and relative abundance
+  ab_min[s]=min(data_tot_cut$abundance_celltype)
+  ab_min_rel[s]=min(data_tot_cut$abundance_celltype)/sum(data_tot$abundance_celltype)
+  
+  data_tot_cut$thresh=s
+ 
+  G[[s]]=data_tot_cut
+  }
+
+  ## Gather the data
+  data_all_thre=do.call(rbind,G)
+  data_all_thre = data_all_thre %>% group_by(thresh,nb_bio) %>% summarise (n = n()) %>%
+  mutate(freq = n / sum(n))
+  data_all_thre=as.data.frame(data_all_thre)
+
+  ## Plot
+  ggplot(data = data_all_thre,aes(x=thresh,y=freq,colour=as.factor(nb_bio)))+
+  geom_line(size=1.5)+geom_point(size=3)+
+  labs(y='IS proportion',x='Abundance threshold',
+       colour='# Replicates detection',title=cellfilter)+
+  scale_fill_manual(values=col,labels=names(col))+
+  scale_y_continuous(breaks = seq(0,1,0.10),labels = percent_format())+
+  scale_x_continuous(limits = c(1, 10),breaks = seq(1,10, by = 1))+  
+  geom_hline(yintercept=0.97, color='black', size=1.5,alpha=0.5,linetype='dotted')+
+  geom_vline(xintercept=6, color='black', size=1.5,alpha=0.5,linetype='dotted')+
+  th_small+theme(strip.background = element_blank(),strip.text.x = element_blank())+
+  guides(fill=guide_legend(title='',override.aes = list(size=12)))+
+    scale_colour_manual(values=c("steelblue2","royalblue1","royalblue4"))
+```
+
+
+#### _**Supp. Figure 8A : Biological Replicates correlation**_
+
+```{r SuppFig8A, echo=FALSE, fig.width=7, fig.height=5, warning=FALSE,message=FALSE}
+
+  #FigS8 (A) - scatter plot, threshold = 6 in at least one of the bio replicate
+
+  #all the IS that match the criteria
+  IS_to_keep=unique(G[[6]]$IS)
+  s=6
+  
+ ##Rep 1 vs Rep 2
+ data_plot=merge(rep_1,rep_2,all=TRUE,by='posid')
+ data_plot=data_plot[,c('posid','G.x','G.y')]
+ data_plot$filter=factor(ifelse(data_plot$posid%in% IS_to_keep,1,0),
+                        levels=c(0,1),
+                        labels=c(paste('Ab. <',s), paste('Ab. >=',s)))
+ data_plot[is.na(data_plot)]<-0
+
+ data_cut=subset(data_plot,filter==paste('Ab. >=',s))
+ r=round(cor(data_cut$G.x,data_cut$G.y),4)
+
+  ##Plot
+  ggplot(data_plot,aes(x=G.x,y=G.y,colour=filter))+
+  geom_count()+
+  labs(x='Replicate 1',y='Replicate 2',title=paste('r=',r),fill='')+th_small+
+  guides(colour=guide_legend(title='',override.aes = list(size=4)))
+
+```
+

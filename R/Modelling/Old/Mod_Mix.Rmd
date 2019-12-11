@@ -1,0 +1,534 @@
+---
+title: "Mixed Simulation"
+output:
+  html_document: default
+---
+
+```{r Package_Functions,include=FALSE}
+
+###Loading the packages
+library(plyr)
+library(tidyverse)
+library(reshape2)
+library(psych)
+library(MASS)
+library(scales)
+library(gridExtra)
+library(grid)
+library(knitr)
+library(vegan)
+library(kableExtra)
+library(arrangements)
+library(gtable)
+library(UpSetR)
+library(ggtern)
+library(ClusterR)
+
+# load existing functions
+
+#load the modelisation function.
+source('Data_generator.R')
+#load the correction function.
+source('../AbundanceCorrection_2steps_Normalization_Steps.R')
+#load the tranformation and kmeans functions.
+source('../Kmeans_clustering.R')
+
+
+# Bias plot function
+Bias=function(data,combi){
+  
+#Initialization  
+ind_tot=list()
+names=c('Entire simulated dataset','Sampled - biased - corrected dataset')
+data_pat=data
+  
+  for (i in 1:ncol(combi)){
+    
+    c1=combi[1,i]
+    c2=combi[2,i]
+    
+    data=data_pat[,c('posid',c1,c2)]
+    colnames(data)=c('IS','c1','c2')
+    data_sub=subset(data,data$c1>0|data$c2>0)
+    
+    if (c1 =="NKcells"){n_c1='K'}
+    n_c1=substr(c1, 1,1)
+    
+    if (c2 =="NKcells"){n_c1='K'}
+    n_c2=substr(c2, 1,1)
+    
+    # correlation study
+    r_cut=round(cor(data_sub$c1,data_sub$c2),3)
+    
+    ind=c(c1,c2,r_cut)
+    
+    #Bias plot on the data with threshold
+    data_thr_study=data_sub
+    data_thr_study$quotient=data_thr_study$c2/data_thr_study$c1
+    data_thr_study$cat=cut(data_thr_study$quotient,
+                           breaks=c(-Inf,0.1,0.2,0.33,0.66,1.5,3,5,10,Inf),right=T,include.lowest = TRUE)
+    
+    ## Plot
+    G=ggplot( data_thr_study)+
+      geom_bar(aes(x=cat))+
+      labs(y='IS number',x=n_c1,title=paste('\n \n',c1,'vs',c2,'\n'))+
+      scale_x_discrete(drop=FALSE,breaks=levels(data_thr_study$cat),
+                       labels= c(">10", ">5", ">3",">1.5","1",">1.5",">3",">5",">10"))+
+      th_small+theme(axis.text.x = element_text(angle = 90, hjust = 1))+
+      theme(axis.title.x=element_text(hjust=0,family='ArialMT',size=30, colour='black',face='bold'))
+    
+    g = ggplotGrob(G)
+    
+    #Add the second x axis title. 
+    g2 <- gtable_add_grob(g, textGrob(n_c2, x=1, hjust=1,
+                                      gp=gpar(fontfamily='ArialMT',fontsize=30, col='black',fontface='bold')),
+                          t=8, l=4, b=8, r=4, name="right-title")
+    
+      plot(g2)
+     }
+
+}
+
+
+```
+
+```{r Parameters,include=FALSE}
+
+## Useful values
+
+#Healthy donnor blood proportions
+prop_HD=c(0.2,0.2,0.2,0.2,0.2)
+
+#Pairs of interest
+combi=arrangements::permutations(x = c('Granulocytes_corrected','Monocytes_corrected',
+                                       'Bcells_corrected','NKcells_corrected','Tcells_corrected'), freq = c(2, 2, 2,2,2), k = 2)
+combi=t(combi)
+combi=combi[,c(2,3,4,5,14,15,24)]
+
+
+cells=c('Bcells','Monocytes','Granulocytes','NKcells','Tcells')
+
+## Plot parameters
+
+# Fix the colors and order of all the possible clusters:
+colors <- c(GMBKT='mediumorchid4',GMKT='darkorchid',GMBT='mediumpurple4',GMBK='mediumpurple',
+            GBKT='magenta4',MBKT='hotpink4',
+            GMB='forestgreen',GMK='deepskyblue3',GMT='thistle4',GBT='purple1',GBK='aquamarine3',GKT='thistle3',
+            MBT='sienna3',MBK='honeydew3',MKT='lightpink4',BKT='coral2',
+            MB='cornsilk3',MK='plum3',GB='green3',GK='cadetblue4',GM='deepskyblue4',GT='darkslateblue',MT='red4',
+            BK='lightseagreen',BT='darkorange2',KT='hotpink3',
+            T='red3',B='lightgoldenrod',K='turquoise2',G='royalblue4',M='gray22')
+
+# Order the clusters
+fac=c('GMBKT',"GMKT",'GMBT','GMBK','GBKT','MBKT','GMK','GMB','GMT','GBT','GBK','GKT',
+      'MBK','MBT','MKT','BKT','MB','MK','MT', 'GM', 'GB','GK','GT', 'BK','BT','KT','G','M','B','K','T')
+
+# Ggplot theme
+th_small=theme_bw()+
+   theme(text=element_text(family='ArialMT',size=23, colour='black',face='bold'),
+        panel.grid.minor = element_blank(),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='ArialMT',size=27,colour='black',face='bold'),
+         axis.text=element_text(family='ArialMT',size=20, colour='black',face='bold'),
+         plot.title=element_text(family='ArialMT',size=27, colour='black',face='bold'),
+         legend.text=element_text(family='ArialMT',size=18 ,colour='black',face='bold'))
+
+```
+
+# (1) Get the data 
+
+```{r GetData, echo=FALSE}
+
+intSites <- read.table(gzfile('../../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
+intSites$key=paste(as.character(intSites$patient),as.character(intSites$timePoint),sep='_')
+
+intSites_new_concat_sup0=read.table('../../data/intSites_new_concat_sup0.csv', sep = ';', header = TRUE)
+
+## Get other values
+crossOverReports <- readChar('../../data/crossOverReports.tsv', file.info('../../data/crossOverReports.tsv')$size)
+
+crossOverReports <- unlist(strsplit(crossOverReports, '#%'))
+crossOverReports <- unlist(lapply(crossOverReports, function(x){
+  source     <- ifelse(grepl('#source:', x), sub('\\t+$', '', str_match(x, '#source:\\s+(.+)')[2]), '')
+  cellCounts <- as.numeric(str_match_all(str_match(x, 'initialCellCounts,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  psort <- as.numeric(str_match_all(str_match(x, 'pB_postsort,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  count_psort <-as.numeric(str_match_all(str_match(x, 'postsortCount,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  VCN <-as.numeric(str_match_all(str_match(x, 'VCN,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  DNA <-as.numeric(str_match_all(str_match(x, 'DNA,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  patient    <- str_match(x, '#(\\S+)')[2]
+  timePoint  <- str_match(x, '#\\S+\\s+(\\S+)')[2]
+  t          <- gsub('\\t+\\n', '\n', substr(x, regexpr('COUNTS', x)+7, nchar(x)))
+  m          <- read.table(tc <- textConnection(t), header = TRUE, fill = TRUE, check.names = FALSE, sep='\t'); close(tc); 
+  if(nrow(m) < 5 | length(m) < 5) return(NA)
+  m <- m[1:5, 1:5]
+  r <- list()
+  r[[paste(patient, timePoint, source, sep='|')]] <- list(
+    patient   = str_match(x, '#(\\S+)\\s+(\\S+)')[2],
+    timePoint = str_match(x, '#(\\S+)\\s+(\\S+)')[3],
+    source    = source,
+    t         = t,
+    table     = m,
+    cellCount = cellCounts,
+    psort     = psort,
+    count_psort = count_psort,
+    VCN = VCN,
+    DNA = DNA)
+
+  r }), recursive = FALSE)
+
+crossOverReports <- crossOverReports[sapply(crossOverReports, is.list)]
+crossOverReports <- crossOverReports[grep(names(crossOverReports),pattern='Blood')]  
+```
+
+
+# (2) Get all simulation parameters
+
+## Get all the real data useful for our modelisation
+```{r echo=FALSE}
+
+##Select the WAS4|m48 patient
+patient='WAS4|m48'
+
+#Filter the data
+
+intSites$key=gsub('_M','\\|m',intSites$key)
+intSites=intSites[intSites$key==patient,]
+intSites=subset(intSites, cellType %in% c('GRANULOCYTES', 'MONOCYTES', 'BCELLS', 'NKCELLS', 'TCELLS'))
+
+key=paste0(patient,'|Blood')
+
+## Get important values of the tsv file
+crossOverReports=crossOverReports[[key]]
+VCN=crossOverReports$VCN
+VCN_norm=VCN/max(VCN)
+DNA=crossOverReports$DNA
+
+## Get the wide dataframe with patient filter
+intSites_new_concat_sup0=filter(intSites_new_concat_sup0,key== !!key)
+
+
+#  **************** calculate estimators **************
+indic <-intSites %>%
+  dplyr::group_by(patient, timePoint) %>%
+  dplyr::summarise(Chao1 = round(estimateR(estAbund, index='chao')[2], 0),
+                   ACE= round(estimateR(estAbund, index='chao')[4], 0),
+                   Shannon=round(diversity(estAbund),3), 
+                   UniqueSites=length(unique(posid)),
+                   Inferred_cells=sum(estAbund),
+                   percent_sampling = UniqueSites/Chao1) %>% dplyr::ungroup()
+indic$mean_cells=mean(intSites_new_concat_sup0$cellCount)
+indic$var=var(intSites_new_concat_sup0$cellCount)
+indic$lambda=indic$mean_cells/indic$percent_sampling
+
+
+# contamination matrix
+    
+matrix=as.matrix(crossOverReports$table)
+
+for (r in 1:nrow(matrix)){
+  tab=matrix[r,]
+  nb_zero=length(tab[tab == 0])
+  if (nb_zero >0){
+    percent=0.003/100*nb_zero
+    p=(percent)/(1-percent)*sum(tab[tab>0])
+    remp=p/nb_zero
+    tab[tab==0]=remp
+  }
+  matrix[r,]=tab
+}
+
+#Vector contamination matrix
+confusion=as.matrix(matrix)
+VCN=matrix(nrow=5,ncol=5,rep(0,5*5))
+diag(VCN)=crossOverReports$VCN
+confusion=confusion%*%VCN    
+
+#Proportion
+conta_prop=prop.table(matrix,2)
+
+rm(intSites)
+```
+
+
+## Simulation with hyper-parameters
+
+```{r Data simulation, echo=FALSE}
+
+cst_var=1.4
+prob_type=c(0.6,0.2,0.2)
+cst_ab= 1e3
+
+print(paste0("patient :",patient))
+print(paste(c("cst_variance :",cst_var,'||',"pourcentage BMGKT :",prob_type[1],'||',"pourcentage GM ",prob_type[2],"pourcentageT ",prob_type[3],'||',"cst_ab pour le sampling :",cst_ab),collapse = " "))
+
+test=Dataset_creation(prob_type,cst_var,cst_ab,crossOverReports=crossOverReports,indic=indic)
+
+data_sim=test$data_sim
+repart=test$repart
+pop_df=test$pop_df
+
+```
+
+
+## Simulated dataset Information
+
+```{r Data simulated study, echo=FALSE, results='asis',   fig.height=9, fig.width=18,dev='png',dpi=350}
+### Values before sampling and bias
+pop_df$cellCount=rowSums(pop_df[,cells])
+  
+  #transformation to project on the ternary plot
+  pop=pop_df[,cells]
+  pop=mapply('/', pop, crossOverReports$cellCount)
+  pop=pop*rep(0.2,5)
+  pop=pop/rowSums(pop)
+  
+  prop=cbind(pop,pop_df[,c('cellCount','type','posid')])
+  colnames(prop)=c('Bcells_corrected','Monocytes_corrected','Granulocytes_corrected',
+                   'NKcells_corrected','Tcells_corrected','cellCount','type','posid')
+  
+
+ ##Bias Plot
+ Bias(prop,combi) 
+  
+ ## Original ternary plot with real clusters
+  
+ colnames(prop)=c('B','M','G','K','T','cellCount','type')
+  
+ samp= ggtern(prop,aes(G+M,T,B+K,group=type))+
+      geom_count(aes(color= type,alpha=cellCount))+
+      tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('T')+zlab('BK')+
+      labs(title='Entire simulated dataset - no threshold - no bias')+
+      scale_color_manual(values = colors)+
+      scale_size_continuous(breaks = round,range=c(4, 15))+
+      scale_alpha(range=c(0.42,1),breaks=c(1,10,50,100,200,300),guide=FALSE)+
+      guides(color=guide_legend(title='',override.aes = list(size=10),order=1),
+             size=guide_legend(title='IS number'))+
+      theme(legend.text = element_text(family='ArialMT',size=23,face='bold'),
+            text=element_text(family='ArialMT',size=26,face='bold'),
+            strip.background=element_rect(fill=NA, color=NA),
+            axis.text=element_text(size=26,family='ArialMT',colour='black',face='bold'),
+            axis.title=element_text(size=38,family='ArialMT',colour='black',face='bold'),
+            panel.background =element_rect(fill = "white", colour = "black",size = 0.5, linetype = "solid"),
+            panel.grid.major = element_line(colour = "gray60",size = 0.3),
+            panel.grid.minor = element_line(colour = "gray60",size = 0.1),
+            panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+            plot.title = element_text(hjust = 0.5,family='ArialMT',size=35,colour = "black",face='bold'),
+            tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+            tern.axis.arrow.text=element_text(size=33,family='ArialMT',colour='black',face='bold'))
+ 
+  print(samp)
+  
+
+#### Data repartition estimators (After bias) 
+means = mean(data_sim$cellCount)
+vars = var(data_sim$cellCount)
+nbIS = nrow(data_sim)
+nb_cells = sum(data_sim$cellCount)
+
+indic_sim=data.frame(round(means,3),round(vars,3),nbIS,nb_cells)
+colnames(indic_sim)=c('Mean Ab','Var Ab','Nb of IS','Nb of cells')
+print(kable(indic_sim,caption="Simulation summary - after sampling and bias")%>%
+        kable_styling())
+
+```
+
+
+# (3) Pipeline
+
+```{r Pipeline, echo=FALSE, message=FALSE,  fig.height=9, fig.width=18,dev='png',dpi=350}
+
+##### ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ (3) Clustering ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+list_thresholds = c(1:8)
+nb_IS=matrix(NA,nrow=1,ncol=length(list_thresholds))
+purity = matrix(NA,nrow=1,ncol=length(list_thresholds))
+rand = matrix(NA,nrow=1,ncol=length(list_thresholds))
+nmi  = matrix(NA,nrow=1,ncol=length(list_thresholds))
+entropy = matrix(NA,nrow=1,ncol=length(list_thresholds))
+ 
+for (thre in list_thresholds){
+  
+### Apply the threshold
+data_threshold=filter(data_sim,Granulocytes>=thre|Monocytes>=thre|Bcells>=thre|NKcells>=thre|Tcells>=thre)
+
+### ************* Apply the correction *************
+ 
+    correction=Correction_2steps_Normalization(x=crossOverReports,d2=data_threshold)
+    data_corrected=correction$data_corrected_final
+    colnames(data_corrected)=c('posid','gene',paste0(cells,'_corrected'))
+    
+    # Add the proportions
+    prop = (data_corrected[,grepl("_corrected",names(data_corrected))])/
+      rowSums((data_corrected[,grepl("corrected",names(data_corrected))]))
+    names(prop) = c("Bcells_corrected_prop", "Monocytes_corrected_prop", "Granulocytes_corrected_prop",
+                    "NKcells_corrected_prop", "Tcells_corrected_prop")
+    intSites_new = cbind(data_corrected,prop)
+
+    
+### ************* Apply the clustering *************
+
+   intSites_new$key='pat|mxx|Blood'
+   kmean= KmeansClustering(intSites_new,HD=prop_HD)
+   kmean_IS=kmean$intSites_withKmeans
+   
+   #Add the real IS type
+   kmean_IS=left_join(kmean_IS,data_sim[,c('posid','type')])
+   
+  #clustering indicators
+  nb_IS[thre]=nrow(kmean_IS)
+  nb_cluster = kmean$nbclust_estim
+  
+  #clustering quality
+  purity[thre]=   external_validation(as.numeric(factor(kmean_IS$type)),as.numeric(factor(kmean_IS$cluster)),
+                                  method = c('purity'))
+  rand[thre]= external_validation(as.numeric(factor(kmean_IS$type)),as.numeric(factor(kmean_IS$cluster)),
+                                  method = c('adjusted_rand_index'))
+  nmi[thre]= external_validation(as.numeric(factor(kmean_IS$type)),as.numeric(factor(kmean_IS$cluster)),
+                                  method = c('nmi'))
+  entropy[thre] = external_validation(as.numeric(factor(kmean_IS$type)),as.numeric(factor(kmean_IS$cluster)),
+                                  method = c('entropy'))
+ 
+
+ #print plots
+ 
+ if(thre %in% c(1,5,6,7,8)){
+  
+   print(paste("Threshold value =",thre))
+   
+   ## Bias Plot
+   Bias(intSites_new,combi)
+   
+   ## Elbow Plot
+   elb=data.frame(k=1:15,r2=kmean$elbow)
+
+   elbow=ggplot(elb,aes(x=k,y=r2))+
+   geom_line()+ geom_point()+
+   scale_x_continuous(breaks=1:15)+
+   geom_vline(xintercept=kmean$nbclust_estim,linetype='dotted',size=2)+
+   labs(y="R2", x="Number of clusters K")+
+   theme_bw()+guides(color=FALSE)+
+   theme(text=element_text(family='ArialMT',size=32, colour='black'),panel.grid.major.y = element_blank(),
+        panel.grid.minor=element_blank(),strip.background=element_rect(fill=NA, color=NA),
+        strip.text=element_text(size=34),axis.text =element_text(family='ArialMT',size=18, colour='black'))
+
+  print(elbow)
+
+   ##Ternary plot 
+
+  a=kmean_IS
+ a$cellCount_corrected =  a$Bcells_corrected +a$Monocytes_corrected +a$Granulocytes_corrected+
+   a$NKcells_corrected +a$Tcells_corrected
+     a=a[c('key','cluster','type','cellCount_corrected',
+         names(kmean$intSites_withKmeans[,
+         grep('_prop',names(kmean$intSites_withKmeans))]))]
+     #Rename the cell types corrected proportions.
+      names(a)=c(names(a)[!grepl(x=names(a),'_prop')],'B','M','G','K','T')
+      
+    terna_cluster=  ggtern(a,aes(G+M,T,B+K,group=cluster))+
+      geom_count(aes(color= cluster,alpha=cellCount_corrected))+
+      tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('T')+zlab('BK')+
+      labs(title=paste('threshold',thre))+
+      scale_color_manual(values = colors)+
+      scale_size_continuous(breaks = round,range=c(4, 15))+
+      scale_alpha(range=c(0.42,1),breaks=c(1,10,50,100,200,300),guide=FALSE)+
+      guides(color=guide_legend(title='',override.aes = list(size=10),order=1),
+             size=guide_legend(title='IS number'))+
+      theme(legend.text = element_text(family='ArialMT',size=23,face='bold'),
+            text=element_text(family='ArialMT',size=26,face='bold'),
+            strip.background=element_rect(fill=NA, color=NA),
+            axis.text=element_text(size=26,family='ArialMT',colour='black',face='bold'),
+            axis.title=element_text(size=38,family='ArialMT',colour='black',face='bold'),
+            panel.background =element_rect(fill = "white", colour = "black",size = 0.5, linetype = "solid"),
+            panel.grid.major = element_line(colour = "gray60",size = 0.3),
+            panel.grid.minor = element_line(colour = "gray60",size = 0.1),
+            panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+            plot.title = element_text(hjust = 0.5,family='ArialMT',size=35,colour = "black",face='bold'),
+            tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+            tern.axis.arrow.text=element_text(size=33,family='ArialMT',colour='black',face='bold'))
+ 
+  ## Centroids
+  tableau=kmean$tableau
+   tableau = tableau[,grepl("transf",names(tableau))==FALSE]
+    tableau$prop=round(tableau[,'clust_size']/sum(tableau[,'clust_size']),2)*100
+  tableau$R2=paste(round(kmean$R2,2))
+
+  data=tableau
+  colnames(data)=c('B','M','G','K','T',colnames(data)[6:ncol(data)])
+
+  data$cluster=factor(data$cluster,levels=fac)
+  
+  Centro= ggtern(data,aes(G+M,T,B+K,group=cluster))+
+   geom_point(aes(colour=cluster),shape = 1, size = 11, stroke = 3.2)+
+   geom_point(aes(colour=cluster),shape = 16, size = 9.5,alpha=0.7)+
+   tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('T')+zlab('BK')+
+   scale_fill_manual(values = colors)+
+   scale_colour_manual(values = colors)+
+   theme(legend.text = element_text(family='ArialMT',size=23,face='bold'),
+         text=element_text(family='ArialMT',size=26,face='bold'),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='ArialMT',size=38,colour='black',face='bold'),
+         axis.text=element_text(size=26,family='ArialMT',colour='black',face='bold'),
+         axis.title=element_text(size=38,family='ArialMT',colour='black',face='bold'),
+         panel.background =element_rect(fill = "white", colour = "black",size = 0.5, linetype = "solid"),
+         panel.grid.major = element_line(colour = "gray60",size = 0.3),
+         panel.grid.minor = element_line(colour = "gray60",size = 0.1),
+         panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+         plot.title = element_text(hjust = 0.5,family='ArialMT',size=35,colour = "black",face='bold'),
+         tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+         tern.axis.arrow.text=element_text(size=33,family='ArialMT',colour='black',face='bold'))+
+    guides(colour=guide_legend(title=''))
+
+    ## Barplot
+   bar=ggplot(data=data)+geom_bar(aes(x='',y=prop/100,group=prop,fill=cluster),stat='identity')+
+    scale_fill_manual(values = colors)+ scale_y_continuous(labels = percent_format())+
+    labs(y='IS proportion',x='')+
+    theme_bw()+coord_flip()
+
+  grid.arrange(arrangeGrob(terna_cluster,Centro, ncol=2, nrow=1),
+         arrangeGrob(bar, ncol=1, nrow=1), heights=c(4,1),top = textGrob("Simulated data clustering",gp=gpar(fontsize=30,font=2)))
+  
+  ## Real data
+  
+     terna_real=  ggtern(a,aes(G+M,T,B+K,group=type))+
+      geom_count(aes(color= type,alpha=cellCount_corrected))+
+      tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('T')+zlab('BK')+
+      labs(title=paste('threshold',thre))+
+      scale_color_manual(values = colors)+
+      scale_size_continuous(breaks = round,range=c(4, 15))+
+      scale_alpha(range=c(0.42,1),breaks=c(1,10,50,100,200,300),guide=FALSE)+
+      guides(color=guide_legend(title='',override.aes = list(size=10),order=1),
+             size=guide_legend(title='IS number'))+
+      theme(legend.text = element_text(family='ArialMT',size=23,face='bold'),
+            text=element_text(family='ArialMT',size=26,face='bold'),
+            strip.background=element_rect(fill=NA, color=NA),
+            axis.text=element_text(size=26,family='ArialMT',colour='black',face='bold'),
+            axis.title=element_text(size=38,family='ArialMT',colour='black',face='bold'),
+            panel.background =element_rect(fill = "white", colour = "black",size = 0.5, linetype = "solid"),
+            panel.grid.major = element_line(colour = "gray60",size = 0.3),
+            panel.grid.minor = element_line(colour = "gray60",size = 0.1),
+            panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+            plot.title = element_text(hjust = 0.5,family='ArialMT',size=35,colour = "black",face='bold'),
+            tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+            tern.axis.arrow.text=element_text(size=33,family='ArialMT',colour='black',face='bold'))
+  
+    
+     data_comp=reshape2::melt(table(a$type,a$cluster))
+     
+     heatmap=ggplot(data=data_comp,aes(x=Var2,y=Var1,label=value))+
+             geom_tile(aes(fill=value))+
+             geom_text(color='white',size=8)+theme_bw()+
+       labs(y='real type',x='cluster')
+  
+     grid.arrange(terna_real,heatmap,nrow=1,top = textGrob("Real data comparaison",gp=gpar(fontsize=30,font=2)))
+     
+ }
+}
+
+```
+
+
+```{r clustering_table, echo=FALSE, results='asis'}
+clustering_indicators = round(rbind(thresholds = list_thresholds ,nb_IS=nb_IS , purity = purity,rand = rand,nmi=nmi),3)
+rownames(clustering_indicators)=c('threshold','nb_IS','purity','rand','nmi')
+print(kable(clustering_indicators)%>%kable_styling())
+```

@@ -1,0 +1,278 @@
+---
+title: "Monte Carlo - Heterogeneous mixed HSPC population"
+output:
+  html_document: default
+---
+
+```{r Packages_Functions, include=FALSE}
+
+###Loading the packages
+library(plyr)
+library(tidyverse)
+library(reshape2)
+library(psych)
+library(MASS)
+library(vegan)
+library(scales)
+library(gridExtra)
+library(grid)
+library(knitr)
+library(kableExtra)
+library(gtable)
+library(ggtern)
+library(ClusterR)
+
+#load the modelling function (STEP1 to STEP4 clonal tracking modelling - Supplemental methods 9.2).
+source('Data_generator.R')
+#load the correction function (STEP5 clonal tracking modelling - Supplemental methods 9.2).
+source('../AbundanceCorrection_2steps_Normalization_Steps.R')
+#load the tranformation and kmeans functions (STEP5 clonal tracking modelling - Supplemental methods 9.2).
+source('../Kmeans_clustering.R')
+
+## Global parameters
+cells=c('Bcells','Monocytes','Granulocytes','NKcells','Tcells')
+
+# Normalized blood proportions
+prop_norm=c(0.2,0.2,0.2,0.2,0.2)
+
+```
+
+```{r GetData, echo=FALSE}
+# (1) Get all the data 
+
+#Raw database
+intSites <- read.table(gzfile('../../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
+intSites$key=paste(as.character(intSites$patient),as.character(intSites$timePoint),sep='_')
+
+#Database in a wide format (1 row per IS)
+intSites_new_concat_sup0=read.table('../../data/intSites_new_concat_sup0.csv', sep = ';', header = TRUE)
+
+## Get other values (contamination, cell type prop  etc)
+crossOverReports <- readChar('../../data/crossOverReports.tsv', file.info('../../data/crossOverReports.tsv')$size)
+
+crossOverReports <- unlist(strsplit(crossOverReports, '#%'))
+crossOverReports <- unlist(lapply(crossOverReports, function(x){
+  source     <- ifelse(grepl('#source:', x), sub('\\t+$', '', str_match(x, '#source:\\s+(.+)')[2]), '')
+  cellCounts <- as.numeric(str_match_all(str_match(x, 'initialCellCounts,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  psort <- as.numeric(str_match_all(str_match(x, 'pB_postsort,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  count_psort <-as.numeric(str_match_all(str_match(x, 'postsortCount,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  VCN <-as.numeric(str_match_all(str_match(x, 'VCN,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  DNA <-as.numeric(str_match_all(str_match(x, 'DNA,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  patient    <- str_match(x, '#(\\S+)')[2]
+  timePoint  <- str_match(x, '#\\S+\\s+(\\S+)')[2]
+  t          <- gsub('\\t+\\n', '\n', substr(x, regexpr('COUNTS', x)+7, nchar(x)))
+  m          <- read.table(tc <- textConnection(t), header = TRUE, fill = TRUE, check.names = FALSE, sep='\t'); close(tc); 
+  if(nrow(m) < 5 | length(m) < 5) return(NA)
+  m <- m[1:5, 1:5]
+  r <- list()
+  r[[paste(patient, timePoint, source, sep='|')]] <- list(
+    patient   = str_match(x, '#(\\S+)\\s+(\\S+)')[2],
+    timePoint = str_match(x, '#(\\S+)\\s+(\\S+)')[3],
+    source    = source,
+    t         = t,
+    table     = m,
+    cellCount = cellCounts,
+    psort     = psort,
+    count_psort = count_psort,
+    VCN = VCN,
+    DNA = DNA)
+
+  r }), recursive = FALSE)
+
+crossOverReports <- crossOverReports[sapply(crossOverReports, is.list)]
+crossOverReports <- crossOverReports[grep(names(crossOverReports),pattern='Blood')]  
+```
+
+
+```{r GetParameters, echo=FALSE}
+# (2) Select useful informations for the simulation
+
+## Select the WAS4|m48 patient
+patient='WAS4|m48'
+
+#Filter the data
+intSites$key=gsub('_M','\\|m',intSites$key)
+intSites=intSites[intSites$key==patient,]
+intSites=subset(intSites, cellType %in% c('GRANULOCYTES', 'MONOCYTES', 'BCELLS', 'NKCELLS', 'TCELLS'))
+
+key=paste0(patient,'|Blood')
+crossOverReports=crossOverReports[[key]]
+
+## Get the wide dataframe with patient filter
+intSites_new_concat_sup0=filter(intSites_new_concat_sup0,key== !!key)
+
+
+#  **************** calculate some indicators on the real values **************
+indic <-intSites %>%
+  dplyr::group_by(patient, timePoint) %>%
+  dplyr::summarise(Chao1 = round(estimateR(estAbund, index='chao')[2], 0),
+                   ACE= round(estimateR(estAbund, index='chao')[4], 0),
+                   Shannon=round(diversity(estAbund),3), 
+                   UniqueSites=length(unique(posid)),
+                   Inferred_cells=sum(estAbund),
+                   percent_sampling = UniqueSites/Chao1) %>% dplyr::ungroup()
+indic$mean_cells=mean(intSites_new_concat_sup0$cellCount)
+indic$var=var(intSites_new_concat_sup0$cellCount)
+indic$lambda=indic$mean_cells/indic$percent_sampling
+
+#Contamination matrix
+matrix=as.matrix(crossOverReports$table)
+
+for (r in 1:nrow(matrix)){
+  tab=matrix[r,]
+  nb_zero=length(tab[tab == 0])
+  if (nb_zero >0){
+    percent=0.003/100*nb_zero
+    p=(percent)/(1-percent)*sum(tab[tab>0])
+    remp=p/nb_zero
+    tab[tab==0]=remp
+  }
+  matrix[r,]=tab
+}
+
+#Contamination Proportion
+conta_prop=prop.table(matrix,2)
+
+rm(intSites)
+```
+
+
+### _Simulation with hyper-parameters : MonteCarlo loop_
+##### _STEP1 to STEP4 clonal tracking modelling - Supplemental methods 9.2_
+
+```{r Data simulation, echo=FALSE, message=FALSE, warning=FALSE}
+
+# (3) Choose some parameters to run the simulation 
+
+##cst_var is a simulation constant (see Step 2 in paragraph 9.2 of Supplementary methods).
+cst_var=1.4
+##prop_type: proportion for each type of IS (GMBKT,GM,T) to define an homogeneous or heterogeneous population.
+##Here we define an heteregoneous population with 60% of type GMBKT, 20% of types GM and T.
+prop_type=c(0.6,0.2,0.2)
+
+# Define the number of loops
+M=50
+
+# Initialization
+print(paste0("Monte Carlo replicates = ", M))
+means = NULL
+vars = NULL
+nbIS = NULL
+nb_cells = NULL
+
+list_thresholds = c(1:8)
+purity = matrix(NA,nrow=M,ncol=length(list_thresholds))
+rand = matrix(NA,nrow=M,ncol=length(list_thresholds))
+nmi  = matrix(NA,nrow=M,ncol=length(list_thresholds))
+
+for (m in 1:M){
+
+SIM=Dataset_creation(prop_type,cst_var,crossOverReports=crossOverReports,indic=indic,conta_prop=conta_prop,loop=TRUE)
+
+data_sim=SIM$data_sim
+repart=SIM$repart
+
+#### Data repartition estimators (After bias) 
+means = c(means,mean(data_sim$cellCount))
+vars = c(vars,var(data_sim$cellCount))
+nbIS = c(nbIS ,nrow(data_sim))
+nb_cells = c(nb_cells,sum(data_sim$cellCount))
+
+# (4) Apply our pipeline 
+# STEP5 clonal tracking modelling - Supplemental methods 9.2
+
+## Apply the pipeline for different abundance threshold (from 1 to 8)
+for (thre in list_thresholds){
+
+### ************* Apply the abundance threshold *************
+    data_threshold=filter(data_sim,Granulocytes>=thre|Monocytes>=thre|Bcells>=thre|NKcells>=thre|Tcells>=thre)
+
+### ************* Apply the correction *************
+    correction=Correction_2steps_Normalization(x=crossOverReports,d2=data_threshold)
+    data_corrected=correction$data_corrected_final
+    colnames(data_corrected)=c('posid','gene',paste0(cells,'_corrected'))
+    
+    # Add the proportions
+    prop = (data_corrected[,grepl("_corrected",names(data_corrected))])/
+    rowSums((data_corrected[,grepl("corrected",names(data_corrected))]))
+    names(prop) = c("Bcells_corrected_prop", "Monocytes_corrected_prop", "Granulocytes_corrected_prop",
+                    "NKcells_corrected_prop", "Tcells_corrected_prop")
+    intSites_new = cbind(data_corrected,prop)
+
+### ************* Apply the clustering *************
+   intSites_new$key='pat|mxx|Blood'
+   kmean= KmeansClustering(intSites_new,HD=prop_norm)
+   kmean_IS=kmean$intSites_withKmeans
+   
+   #Filter data to delete clusters with less than 5 IS (not relevant)
+   cluster_too_small=kmean$tableau[which(kmean$tableau$clust_size<=5),'clust_num']
+   kmean$tableau=filter(kmean$tableau,!clust_num%in%cluster_too_small )
+   kmean_IS=filter(kmean_IS,!cluster_num%in%cluster_too_small )
+   
+   #Add the real IS type
+   kmean_IS=left_join(kmean_IS,data_sim[,c('posid','type')])
+   
+  #clustering quality indicators
+  nb_cluster = kmean$nbclust_estim
+  purity[m,thre]= external_validation(as.numeric(factor(kmean_IS$type)),as.numeric(factor(kmean_IS$cluster)),
+                                      method = c('purity'))
+  rand[m,thre]= external_validation(as.numeric(factor(kmean_IS$type)),as.numeric(factor(kmean_IS$cluster)),
+                                    method = c('adjusted_rand_index'))
+  nmi[m,thre]= external_validation(as.numeric(factor(kmean_IS$type)),as.numeric(factor(kmean_IS$cluster)),
+                                   method = c('nmi'))
+}
+}
+```
+
+```{r MonteCarlo indicators, echo=FALSE,results='asis'}
+
+## Global indicators on the MonteCarlo results
+
+indic_sim=data.frame(n_sim = c(1:M),means,vars,nbIS,nb_cells)
+
+#Mean Ab
+indic_to_show=tibble(indic$mean_cells, mean(indic_sim$means), sd(indic_sim$means))
+colnames(indic_to_show)=c('real mean Abundance','Mean on the 50 trials','SD on the 50 trials')
+print(kable(indic_to_show,caption="Mean Abundance")%>%kable_styling())
+
+cat('\n')
+
+#Var Ab
+indic_to_show=tibble(indic$var, mean(indic_sim$vars), sd(indic_sim$vars))
+colnames(indic_to_show)=c('real var Abundance','Mean on the 50 trials','SD on the 50 trials')
+print(kable(indic_to_show,caption='Variance of Abundance')%>%kable_styling())
+cat('\n')
+
+#nb IS
+indic_to_show=tibble(indic$UniqueSites, mean(indic_sim$nbIS), sd(indic_sim$nbIS))
+colnames(indic_to_show)=c('real nb of IS','Mean on the 50 trials','SD on the 50 trials')
+print(kable(indic_to_show,caption='IS number')%>%kable_styling())
+cat('\n')
+
+#nb cells
+indic_to_show=tibble(indic$Inferred_cells, mean(indic_sim$nb_cells), sd(indic_sim$nb_cells))
+colnames(indic_to_show)=c('real nb of cells','Mean on the 50 trials','SD on the 50 trials')
+print(kable(indic_to_show,caption = 'Number of cells')%>%kable_styling())
+cat('\n')
+
+
+```
+
+
+
+```{r ClusteringQuality, echo=FALSE, fig.width=10, fig.height=5}
+
+#Boxplot representing three clustering quality indicators
+
+val=as.data.frame(rbind(purity,nmi,rand))
+colnames(val)=1:8
+val$type=rep(c('Purity','NMI','Rand'),each=M)
+plotdata=melt(val)
+
+ggplot(data=plotdata)+geom_boxplot(aes(x=as.factor(variable),y=value,color=type))+facet_wrap(~type)+
+  labs(x='Thresholds',y='')+theme_bw()+theme(strip.text=element_text(family='Arial',size=21,colour='black',face='bold'),
+                                        axis.text=element_text(family='Arial',size=13, colour='black',face='bold'),
+                                        text=element_text(family='Arial',size=13, colour='black',face='bold'),
+                                        axis.title =element_text(family='Arial',size=13, colour='black',face='bold'))
+```
+

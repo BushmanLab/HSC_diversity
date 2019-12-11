@@ -1,0 +1,1517 @@
+---
+fontsize: 11pt
+geometry: margin=0.25in
+output:
+  html_document:
+    keep_md: no
+---
+
+```{r DataPreparation, include=FALSE, eval=TRUE, warning=FALSE, message=FALSE}
+
+
+#### **Code for generating**
+#### **Figures 4 to 7 **
+#### **Supplemental Figures 6; 12 to 15; 17 **
+
+########################################################################
+######################## DATA PREPARATION ##############################
+########################################################################
+
+###Loading the packages 
+library(plyr)
+library(tidyverse)
+library(reshape2)
+library(pander)
+library(sqldf)
+library(lazyeval)
+library(lme4)
+library(psych)
+library(MASS)
+library(scales)
+library(gridExtra)
+library(ggtern)
+library(grid)
+library(knitr)
+library(kableExtra)
+library(gtools)
+library(ggalluvial)
+library(gtable)
+library(RColorBrewer)
+library(ComplexHeatmap)
+library(circlize)
+library(gplots)
+
+
+
+#####################################
+### Data loading and formatting  ###
+####################################
+
+intSites <- read.table(gzfile('../data/intSites.mergedSamples.collapsed.csv.gz'), sep = ',', header = TRUE)
+
+for(i in c('start', 'end', 'width', 'estAbund')) intSites[[i]] <- as.numeric(intSites[[i]]) 
+
+#
+# Read in the cell sorting cross over reports which are stored in a single file with records separated with '#%'.
+# The counts table is identifiable by the key word COUNTS. 
+#
+
+options(stringsAsFactors = FALSE)
+crossOverReports <- readChar('../data/crossOverReports.tsv', file.info('../data/crossOverReports.tsv')$size)
+crossOverReports <- unlist(strsplit(crossOverReports, '#%'))
+crossOverReports <- unlist(lapply(crossOverReports, function(x){
+  source     <- ifelse(grepl('#source:', x), sub('\\t+$', '', str_match(x, '#source:\\s+(.+)')[2]), '')
+  cellCounts <- as.numeric(str_match_all(str_match(x, 'initialCellCounts,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  psort <- as.numeric(str_match_all(str_match(x, 'pB_postsort,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  count_psort <-as.numeric(str_match_all(str_match(x, 'postsortCount,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  VCN <-as.numeric(str_match_all(str_match(x, 'VCN,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  DNA <-as.numeric(str_match_all(str_match(x, 'DNA,(.+)')[2], '([\\d\\.]+)')[[1]][,2])
+  patient    <- str_match(x, '#(\\S+)')[2]
+  timePoint  <- str_match(x, '#\\S+\\s+(\\S+)')[2]
+  t          <- gsub('\\t+\\n', '\n', substr(x, regexpr('COUNTS', x)+7, nchar(x)))
+  m          <- read.table(tc <- textConnection(t), header = TRUE, fill = TRUE, check.names = FALSE, sep='\t'); close(tc); 
+  if(nrow(m) < 5 | length(m) < 5) return(NA)
+  m <- m[1:5, 1:5]
+  r <- list()
+  r[[paste(patient, timePoint, source, sep='|')]] <- list(
+    patient   = str_match(x, '#(\\S+)\\s+(\\S+)')[2],
+    timePoint = str_match(x, '#(\\S+)\\s+(\\S+)')[3],
+    source    = source,
+    t         = t,
+    table     = m,
+    cellCount = cellCounts,
+    psort     = psort,
+    count_psort = count_psort,
+    VCN = VCN,
+    DNA = DNA)
+  
+  message('Read in ', names(r))
+  r
+}), recursive = FALSE)
+
+crossOverReports <- crossOverReports[sapply(crossOverReports, is.list)]
+
+#
+# Subset the resulting list to include only those reports which will be used in the study.
+#
+all_samples <- c('WAS4|m12|Blood','WAS4|m36|Blood','WAS4|m48|Blood','WAS4|m60|Blood',
+                 'WAS5|m55|Blood',
+                 'bS/bS|m24|Blood',
+                 'WAS2|m78|Blood',
+                 'WAS7|m48|Blood',
+                 'b0/bE|m48|Blood')
+
+
+if(! all(all_samples %in% names(crossOverReports))) stop('All the requested crossover tables were not found.')
+crossOverReports <- crossOverReports[all_samples]  
+
+
+ ### normalized proportion for each cell type
+ prop_norm=c(0.2,0.2,0.2,0.2,0.2)
+
+
+# Create a key to be used to update corrected abundances.
+intSites$timePoint=tolower(intSites$timePoint)
+intSites$key <- paste(intSites$posid, intSites$cellType, intSites$patient, intSites$timePoint)
+
+ # Put the data in a wide format count table.
+ assign(paste('liste_intSites_new_sup',0,sep=''),lapply(crossOverReports,function(x){  
+   
+    # Subset the intSite data to include only sites from a specific cell type and time point.
+    i <- which(intSites$patient==x$patient &
+               intSites$timePoint==x$timePoint &
+               toupper(intSites$cellType) %in% toupper(names(x$table)))
+    d <- intSites[i,]
+    
+    if(nrow(d) == 0) stop(paste0(x$patient, ' / ', x$timePoint, ' could not be found in the intSite data.'))
+    
+    message('Cell types in retrieved data subset(', x$patient, ' - ', x$timePoint, '): ',
+            paste0(unique(d$celltype), collapse=', '))
+    
+    # Replace NA gene names with 'NONE' in case a function is sensitive to NA.
+    if(length(which(is.na(d$nearestFeature))) > 0) d[which(is.na(d$nearestFeature)),]$nearestFeature <- 'NONE'
+    
+    # Reorganize the data to create an intSite / cell count table.
+    d2 <- reshape2::dcast(d, posid ~ cellType, value.var='estAbund', fun.aggregate=function(x){x[1]}, fill=0)  
+    
+    # Add missing cell types.
+    d2[names(x$table)[! toupper(names(x$table)) %in% toupper(names(d2))]] <- 0
+    
+    # Add nearest gene column.
+    d2$gene <- intSites[match(d2$posid, intSites$posid),]$nearestFeature  
+    
+    # Add inFeature column.
+    d2$inFeature <- intSites[match(d2$posid, intSites$posid),]$inFeature  
+    
+    # Reorganize the column headers to match Correction_CutData_new() input structure.
+    d2 <- d2[,c(1,grep('gene',   names(d2), ignore.case = TRUE),
+                 grep('BCELL',  names(d2), ignore.case = TRUE),
+                 grep('MONO',   names(d2), ignore.case = TRUE),
+                 grep('GRANULO', names(d2), ignore.case = TRUE),
+                 grep('NKCELL', names(d2), ignore.case = TRUE),
+                 grep('TCELL',  names(d2), ignore.case = TRUE),
+                 grep('inFeature',  names(d2), ignore.case = TRUE)
+                )]
+    
+    # Create a cell count column.
+    d2$cellCount <-  apply(d2, 1, function(x){ sum(as.integer(x[3:7])) })
+    
+    # Rename the input columns.
+    names(d2)=c("integrationSite", "gene", "Bcells", "Monocytes", "Granulocytes", "NKcells", "Tcells","inFeature", "cellCount")
+    
+    d2$integrationSite=as.character(d2$integrationSite)
+    d2$gene=as.character(d2$gene)
+    d2$key <- paste(c(x$patient, x$timePoint,x$source),collapse = "|") 
+    intSites_new=d2
+  
+    return(intSites_new)
+    } ))
+  
+  # Gather all the data sup0 (without threshold) in a unique dataframe.
+  intSites_new_concat_sup0=do.call(rbind,liste_intSites_new_sup0)
+  
+# ------------------------------------------------------------------- #
+  
+  #Select the reliable samples
+  samples <- c('WAS4|m12|Blood','WAS4|m48|Blood',
+               'WAS5|m55|Blood',
+               'bS/bS|m24|Blood',
+               'b0/bE|m48|Blood')
+  
+  #########################
+  ## Apply the abundance threshold ##
+  #########################
+  ### ****** Supplemental Methods 4.1 ******### 
+  
+  ### Get the IS that had 6 or more cells for a cell type k at the tmpt.
+  
+  list_intSites_th_Initial=list()
+
+  for(P in samples){
+  
+  pat=P
+  liste=liste_intSites_new_sup0[pat]
+  
+  #Find the IS matching the criteria by patient/tmpt.
+  IS=do.call(rbind, lapply(pat, function(s){
+    L=liste[[s]]
+    L$integrationSite=as.character(L$integrationSite)
+    IS=subset(L,L$Bcells >=6| L$Monocytes >=6 | L$Granulocytes >=6 | L$NKcells >=6 | L$Tcells >=6)
+    print(s)
+    print(nrow(IS))
+    IS
+  }))
+  
+  IS_to_keep=unique(IS$integrationSite)
+  
+  #Apply the filter for the tmpt
+  list_intSites_th_Initial[pat]=lapply(liste, function(x) subset(x,integrationSite%in%IS_to_keep))
+  
+  }
+
+  # Gather all the data with the threshold in a unique dataframe.
+  intSites_threshold_Initial=do.call(rbind,list_intSites_th_Initial)
+  
+  # ------------------------------------------------------------------- #
+
+  #########################
+  ## Apply the Correction ##
+  #########################
+  ### ****** Supplemental Methods 4.2 and 4.3 ******### 
+  
+ #load the correction function.  
+ source('./AbundanceCorrection_2steps_Normalization_Steps.R')
+  
+ list_intSites_th_Corrected=lapply(crossOverReports[samples],function(cross){  
+  
+  if(cross$source == 'BoneMarrow') names(cross$table) <- paste0('BM_', names(cross$table))
+    
+    # Subset the intSites_threshold_Initial data to include only sites from a specific cell type and time point.
+    i <- which(intSites_threshold_Initial$key == paste(c(cross$patient, cross$timePoint, cross$source),collapse = "|")) 
+    df <- intSites_threshold_Initial[i,]
+    
+    #Use the correction function.
+    correction=Correction_2steps_Normalization(x=cross,d2=df)
+    data_corrected_final=correction$data_corrected_final
+
+    # Rename the returned data frame to match the cell types in the intSites data frame.
+    n <- c("integrationSite", "gene", "Bcells_corrected", "Monocytes_corrected", "Granulocytes_corrected",
+           "NKcells_corrected", "Tcells_corrected")
+    names(data_corrected_final) <- n
+  
+    intSites_new =dplyr::right_join(df,data_corrected_final,by=c('integrationSite','gene') )
+    intSites_new = mutate(intSites_new,cellCount_corrected=rowSums(intSites_new[,grepl(names(intSites_new),
+                                                                                       pattern='_corrected$')]))
+  
+    # Add proportions.
+    prop = (intSites_new[,grepl("s_corrected",names(intSites_new))])/
+      rowSums((intSites_new[,grepl("_corrected",names(intSites_new))]))
+    names(prop) = c("Bcells_corrected_prop", "Monocytes_corrected_prop", "Granulocytes_corrected_prop",
+                    "NKcells_corrected_prop", "Tcells_corrected_prop")
+    intSites_new = cbind(intSites_new,prop)
+    
+    return(intSites_new)
+
+  } ) 
+
+ # Gather all the data with the threshold and corrected in a unique dataframe.
+ intSites_threshold=do.call(rbind,list_intSites_th_Corrected)
+ 
+ # ------------------------------------------------------------------- #
+ 
+  ##############################################
+  ### Apply the clustering to the patient   ### 
+  ##############################################
+  ### ****** Supplemental Methods 7 ******### 
+ 
+  #Load the tranformation and kmeans functions.
+  source('./Kmeans_clustering.R')
+
+  #Kmeans with correction
+
+  liste_kmeans_results=list()
+  for(s in samples){
+  data_for_kmeans=subset(intSites_threshold,key==s)
+  
+  #apply the function
+  kmean=KmeansClustering(data_for_kmeans,HD=prop_norm)
+  
+  #drop cluster with not enough IS (<=5)
+  cluster_too_small=kmean$tableau[ which(kmean$tableau$clust_size<=5),'clust_num']
+  kmean$tableau=filter(kmean$tableau,!clust_num%in%cluster_too_small )
+  kmean$intSites_withKmeans=filter(kmean$intSites_withKmeans, !cluster_num%in%cluster_too_small )
+  
+  #return the values
+  liste_kmeans_results[[s]]=kmean
+  }
+
+```
+
+
+```{r GlobalParameters, echo=FALSE, message=FALSE, warning=FALSE}
+
+##################################################################### 
+####################### GLOBAL PARAMETERS ###########################
+##################################################################### 
+
+# All patient
+keys=unique(intSites_threshold$key)
+keys_lab=c(expression(atop(WAS4,m12)),expression(atop(WAS4,m48)),expression(atop(WAS5,m55)),
+           expression(atop(beta*S/beta*S,m24)),expression(atop(beta*0/beta*E,m48)))
+keys_lab_row=c(expression('WAS4~m12'),expression('WAS4~m48'),expression('WAS5~m55'),
+               expression('beta*S/beta*S~m24'),expression('beta*0/beta*E~m48'))
+
+# Sub-group of patient
+samples_evol=samples[1:2]
+samples_evol_lab=c(expression(atop(WAS4,m12)),expression(atop(WAS4,m48)))
+samples_evol_row=c(expression('WAS4~m12'),expression('WAS4~m48'))
+
+samples=samples[-1]
+samples_lab=c(expression(atop(WAS4,m48)),expression(atop(WAS5,m55)),expression(atop(beta*S/beta*S,m24)),
+              expression(atop(beta*0/beta*E,m48)))
+samples_lab_row=c(expression('WAS4~m48'),expression('WAS5~m55'),expression('beta*S/beta*S~m24'),
+              expression('beta*0/beta*E~m48'))
+
+# Determine general element themes for the plots:
+th=theme_bw()+
+   theme(text=element_text(family='Arial',size=32, colour='black',face='bold'),
+         panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='Arial',size=28,colour='black',face='bold'),
+         axis.text=element_text(family='Arial',size=28, colour='black',face='bold'),
+         plot.title=element_text(family='Arial',size=33, colour='black',face='bold'))
+
+th_small=theme_bw()+
+   theme(text=element_text(family='Arial',size=24, colour='black',face='bold'),
+         panel.grid.major = element_blank(),panel.grid.minor = element_blank(),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='Arial',size=22,colour='black',face='bold'),
+         axis.text=element_text(family='Arial',size=22, colour='black',face='bold'),
+         plot.title=element_text(family='Arial',size=25, colour='black',face='bold'))
+
+# Fix the colors and order of all the possible clusters:
+colors <- c(GMBKT='mediumorchid4',GMKT='mediumorchid4',GMBT='mediumorchid4',GMBK='mediumorchid4',
+            GBKT='mediumorchid4',MBKT='mediumorchid4',
+            GMB='forestgreen',GMK='deepskyblue3',GMT='thistle4',GBT='purple1',GBK='aquamarine3',GKT='thistle3',
+            MBT='sienna3',MBK='honeydew3',MKT='lightpink4',BKT='coral2',
+            MB='cornsilk3',MK='plum3',GB='green3',GK='cadetblue4',GM='deepskyblue4',GT='darkslateblue',MT='red4',
+            BK='lightseagreen',BT='darkorange2',KT='hotpink3',
+            T='red3',B='lightgoldenrod',K='turquoise2',G='royalblue4',M='gray22')
+
+fac=c('GMBKT',"GMKT",'GMBT','GMBK','GBKT','MBKT','GMK','GMB','GMT','GBT','GBK','GKT',
+      'MBK','MBT','MKT','BKT','MB','MK','MT', 'GM', 'GB','GK','GT', 'BK','BT','KT','G','M','B','K','T')
+
+celltype=c('Granulocytes','Monocytes','Bcells','NKcells','Tcells')
+
+```
+
+----------------------------------------------------------------------------------------
+
+### **Main Figures**
+
+----------------------------------------------------------------------------------------
+
+#### **Figure 4 & _Supp. figure 6_ : IS clonal detection in the various cells lineages**
+
+
+```{r Fig4&SuppFig6, echo=FALSE, message=FALSE, warning=FALSE, fig.width=10, fig.height=6}
+
+#Fig 4 and Supplemental fig 6 : upset plots
+
+#Loop on the 4 samples.
+for (pat in samples){
+  
+  cat('*****', pat ,'******\n\n')
+  
+  ##(A) All clones (no threshold)
+  
+  data= intSites_new_concat_sup0 %>% filter(key==pat) %>%
+    dplyr::select(integrationSite,celltype,cellCount,gene)
+  
+  #transform data in absence/presence table
+  data_mat=data[,celltype]
+  data_mat[data_mat>0]=1
+  
+  m = make_comb_mat(data_mat,remove_empty_comb_set = FALSE)
+  ss = set_size(m)
+  comb_sets = lapply(comb_name(m), function(nm) extract_comb(m, nm))
+  
+  #mean per set
+  comb_sets = lapply(comb_sets, function(gr) {
+    data=data[gr,'cellCount']
+    mean_Ab = mean(data)})
+  
+  data_bind=do.call(rbind,comb_sets)
+  
+  # continuous color mapping
+  col_fun = colorRamp2(c(0, 5, 20,40), c("white", "turquoise3", "yellow","red"))
+  
+  # upset plot
+   up=UpSet(m, set_order = celltype,
+      comb_order = order(comb_degree(m)),
+      pt_size = unit(3, "mm"), lwd = 2.3,
+      column_title = "All clones",
+      column_title_gp = gpar(fontsize = 23, fontface = "bold"),
+      top_annotation =   HeatmapAnnotation(
+        "Unique Sites\nnumber"=anno_barplot(comb_size(m),
+                            border = FALSE,
+                            gp = gpar(fill = "black"),
+                            height = unit(8, "cm"),
+                            axis_param = list(gp=gpar(fontsize=12))),
+        annotation_name_side = "left",
+        annotation_name_gp=gpar(fontsize=20)),
+       right_annotation = NULL,
+       left_annotation = rowAnnotation(
+        "Set size" = anno_barplot(set_size(m), 
+                                  border = FALSE, 
+                                  gp = gpar(fill = "black"), 
+                                  width = unit(3, "cm"),
+                                  axis_param = list(gp=gpar(fontsize=12))),
+        annotation_name_gp=gpar(fontsize=20)),
+        bottom_annotation =
+        HeatmapAnnotation('mean Abundance' =  sapply(comb_sets, function(gr) identity(gr)),
+                          col = list('mean Abundance' = col_fun),  show_annotation_name = FALSE,
+                          annotation_legend_param = list(
+                            'mean Abundance' = list(direction = "horizontal"))))
+
+#Print the upset plot with the heatmap and the legend at the bottom.     
+draw(up,annotation_legend_side = "bottom")
+
+#Add the numerical values on top of the upset
+cs = comb_size(m)
+co = column_order(up)
+nc = ncol(m)
+decorate_annotation("Unique Sites\nnumber", {
+  grid.text(cs[co], 
+            x = 1:nc, 
+            y = unit(cs[co], "native") + unit(1, "mm"), 
+            gp = gpar(fontsize = 8), 
+            just = "bottom",
+            default.units = "native")
+})
+  
+
+##Supplemental figure 6B
+
+  #Only for WAS4 m48
+  if(pat==samples[1]){
+    
+  #Get the IS with 4 or 5 cell type present
+  five=data[c(extract_comb(m,'01111'),
+              extract_comb(m,'10111'),
+              extract_comb(m,'11011'),
+              extract_comb(m,'11101'),
+              extract_comb(m,'11110'),
+              extract_comb(m,'11111')),]
+  melted_five=melt(five)
+  f= melted_five %>% group_by(variable) %>% 
+     arrange(desc(value)) %>% top_n(10) %>%
+     dplyr::select(integrationSite,gene) 
+  
+  data_selected=data[data$integrationSite%in%f$integrationSite,]
+  data_selected= data_selected %>% arrange(cellCount)
+  
+  
+  data_f=melt( data_selected[,c(1:6,8)])
+  data_f$integrationSite=factor(data_f$integrationSite,levels=data_selected$integrationSite)
+  
+  #define the heatmap's palette
+  Colors=rev(brewer.pal(11,"RdBu"))
+  Colors=c(colorRampPalette(Colors)(20))
+
+  #Select in the 4/5 cells IS some gene of interest
+    liste_gene=c("NFE2","HLA-E","SUZ12","ZNF592","USP32",
+                 "SMARCC1","SHOC2","SEC16A","PACS1","HYAL1")
+    
+    data_f_select=filter(data_f,gene%in% liste_gene )
+    data_order=filter(data_selected,integrationSite %in% data_f_select$integrationSite)
+    
+    #heatmap
+    heat_ex=ggplot(data=data_f_select,aes(x=variable,y=integrationSite,fill=value))+
+            geom_tile()+
+            geom_text(aes(label=value),colour='white',fontface='bold',size=6)+
+            scale_y_discrete(labels=data_order$gene)+
+            scale_fill_gradientn(colours = Colors)+
+            labs(y='Genes',x='')+theme_bw()
+    print(heat_ex)
+  }
+
+##(B) Higly active clones (threshold >=6)
+  
+   data= intSites_threshold_Initial %>% filter(key==pat) %>%  dplyr::select(integrationSite,celltype,cellCount,gene)
+ 
+   #transform data in absence/presence table
+  data_mat=data[,celltype]
+  data_mat[data_mat>0]=1
+  
+  m = make_comb_mat(data_mat,remove_empty_comb_set = FALSE)
+  ss = set_size(m)
+  comb_sets = lapply(comb_name(m), function(nm) extract_comb(m, nm))
+  
+  #mean per set
+  comb_sets = lapply(comb_sets, function(gr) {
+    data=data[gr,'cellCount']
+    mean_Ab = mean(data)})
+  
+  data_bind=do.call(rbind,comb_sets)
+  
+  # continuous color mapping
+  col_fun = colorRamp2(c(0, 5, 20,40), c("white", "turquoise3", "yellow","red"))
+  
+  # upset plot
+   up=UpSet(m, set_order = celltype,
+      comb_order = order(comb_degree(m)),
+      pt_size = unit(3, "mm"), lwd = 2.3,
+      column_title = "Highly active clones",
+      column_title_gp = gpar(fontsize = 23, fontface = "bold"),
+      top_annotation =   HeatmapAnnotation(
+        "Unique Sites\nnumber"=anno_barplot(comb_size(m),
+                            border = FALSE,
+                            gp = gpar(fill = "black"),
+                            height = unit(8, "cm"),
+                            axis_param = list(gp=gpar(fontsize=12))),
+        annotation_name_side = "left",
+        annotation_name_gp=gpar(fontsize=20)),
+       right_annotation = NULL,
+       left_annotation = rowAnnotation(
+        "Set size" = anno_barplot(set_size(m), 
+                                  border = FALSE, 
+                                  gp = gpar(fill = "black"), 
+                                  width = unit(3, "cm"),
+                                  axis_param = list(gp=gpar(fontsize=12))),
+        annotation_name_gp=gpar(fontsize=20)),
+        bottom_annotation =
+        HeatmapAnnotation('mean Abundance' =  sapply(comb_sets, function(gr) identity(gr)),
+                          col = list('mean Abundance' = col_fun),  show_annotation_name = FALSE,
+                          annotation_legend_param = list(
+                            'mean Abundance' = list(direction = "horizontal"))))
+      
+#Print the upset plot with the heatmap and the legend at the bottom.       
+draw(up,annotation_legend_side = "bottom")
+
+ #Add the numerical values on top of the upset
+ cs = comb_size(m)
+ co = column_order(up)
+ nc = ncol(m)
+ decorate_annotation("Unique Sites\nnumber", {
+  grid.text(cs[co], 
+            x = 1:nc, 
+            y = unit(cs[co], "native") + unit(1, "mm"), 
+            gp = gpar(fontsize = 8), 
+            just = "bottom",
+            default.units = "native")
+})
+
+}
+```
+
+
+#### **Figure 5A : Unique IS number**
+
+```{r Fig5A, echo=FALSE, message=FALSE, warning=FALSE,fig.height=7.5, fig.width=12, dev='png',dpi=350}
+
+  #Fig 5A - Unique IS number barplot
+
+  ## Get the data
+  data=intSites_threshold
+  data$cellCount=as.numeric(data$cellCount)
+  high=c()
+
+  for(p in samples) {
+      high[p]=nrow(dplyr::filter(data,key==p))
+  }
+
+  dat=data.frame(high)
+  dat=dplyr::mutate(dat,key=rownames(dat))
+
+  #Name the patient.
+  dat$key=factor(dat$key,levels=samples,labels=samples_lab)
+
+  ## Plot 
+  ggplot(dat,aes(x=key,y=high))+
+  geom_bar(stat="identity",size=1,alpha=0.8)+
+  geom_text(aes(label=high),position = position_stack(vjust = 0.5),
+            size = 9,
+            color='white',fontface="bold")+
+  labs(x='',y='Unique IS number')+
+  scale_x_discrete(breaks=levels(dat$key),labels=samples_lab)+
+  th+theme(legend.position="bottom")
+
+```
+
+
+#### **Figure 5B : % hematopoiesis.**
+
+```{r Fig5B, echo=FALSE, message=FALSE, warning=FALSE,fig.height=7.5, fig.width=12, dev='png',dpi=350}
+   
+  #Fig 5B - % of total hematopoiesis
+
+  ## Get the data
+  total=high=c()
+
+  for(p in samples) {
+  
+  tot  = dplyr::filter(intSites_new_concat_sup0,key==p)
+  thre = dplyr::filter(intSites_threshold,key==p)
+    
+  total[p]= sum(tot$cellCount)
+  high[p]= sum(thre$cellCount)
+  }
+
+  dat=data.frame(cbind(total,high))
+  dat$prop=dat$high/dat$total
+  dat=dplyr::mutate(dat,key=rownames(dat))
+  
+  #Name the patient.
+  dat$key=factor(dat$key,levels=samples,labels=samples_lab)
+
+  ## Plot 
+  ggplot(dat,aes(x=key,y=prop))+
+  geom_bar(stat="identity",size=1,alpha=0.8)+
+  geom_text(aes(label=scales::percent(round(prop,4))),
+            size = 9,
+            color='black',fontface="bold",vjust = -.5)+
+  labs(fill = "",x='',y='% total hematopoiesis')+
+  scale_x_discrete(breaks=dat$key,labels=samples_lab)+
+  th+theme(legend.position="bottom")+
+  scale_y_continuous(limits=c(0,0.8),labels=scales::percent) 
+
+```
+
+
+#### **Figure 6**
+
+```{r Fig6, echo=FALSE, message=FALSE, warning=FALSE, fig.height=24, fig.width=24,dev='png',dpi=350}
+
+ #Fig 6 - Kmeans clustering : ternary plot
+
+  ## Get the data
+  plots=list()
+
+  for(p in 1:4) {
+    
+     pat=samples[p]
+     #Get the kmeans results.
+     data=liste_kmeans_results[[pat]]$intSites_withKmeans
+     data=data[c('key','cluster','cellCount_corrected',
+         names(liste_kmeans_results[[pat]]$intSites_withKmeans[,
+         grep('_prop',names(liste_kmeans_results[[pat]]$intSites_withKmeans))]))]
+     #Rename the cell types corrected proportions.
+     names(data)=c(names(data)[!grepl(x=names(data),'_prop')],'B','M','G','K','T')
+
+    ## Get the clusters' frequencies
+    tableau = liste_kmeans_results[[pat]]$tableau
+    tableau = tableau[,grepl("transf",names(tableau))==FALSE]
+    tableau= tableau %>% group_by(cluster) %>% summarise(clust_size=sum(clust_size))
+    tableau$prop=round(tableau[,'clust_size']/sum(tableau[,'clust_size']),3)*100
+    tableau$clusterprop= paste0(apply(tableau[ , c('cluster','prop') ] , 1 , paste , 
+                                      collapse = "-" ),'%')
+    tableau$cluster=factor(tableau$cluster,levels=fac)
+    tableau=tableau %>% arrange(cluster)
+   
+    data$cluster=factor(data$cluster,levels=tableau$cluster)
+  
+    ## Plot
+    C=ggtern(data,aes(G+M,T,B+K))+
+      geom_count(aes(color= cluster,alpha=cellCount_corrected))+
+      tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('T')+zlab('BK')+
+      labs(title=samples_lab_row[p])+
+      scale_color_manual(labels=tableau$clusterprop,
+                         values = colors[as.character(tableau$cluster)])+
+      scale_size_continuous(breaks = round,range=c(4, 15))+
+      scale_alpha(range=c(0.42,1),breaks=c(1,10,50,100,200,300),guide=FALSE)+
+      guides(color=guide_legend(title='',override.aes = list(size=10),order=1),
+             size=guide_legend(title='IS number'))+
+      theme(legend.text = element_text(family='Arial',size=25,face='bold'),
+            text=element_text(family='Arial',size=28,face='bold'),
+            strip.background=element_rect(fill=NA, color=NA),
+            axis.text=element_text(size=28,family='Arial',colour='black',face='bold'),
+            axis.title=element_text(size=40,family='Arial',colour='black',face='bold'),
+            panel.background =element_rect(fill = "white", colour = "black",size = 0.5, 
+                                           linetype = "solid"),
+            panel.grid.major = element_line(colour = "gray60",size = 0.3),
+            panel.grid.minor = element_line(colour = "gray60",size = 0.1), 
+            panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+            plot.title = element_text(hjust = 0.5,family='Arial',size=35,
+                                      colour = "black",face='bold'),
+            tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+            tern.axis.arrow.text=element_text(size=35,family='Arial',
+                                              colour='black',face='bold'))
+
+    plots[[p]]=C
+  }
+
+  ## Print all the ternary plots in the same panel.
+  grid.arrange(grobs=plots)
+
+```
+
+
+#### **Figure 7A**
+
+```{r Fig7A, echo=FALSE,fig.height=6, fig.width=10,message=FALSE,warning=FALSE}
+
+  #Fig 7A - Longitudinal study : recurrence barplot
+  
+  ## Get the data
+  x='WAS4|m12|Blood'
+  x_1='WAS4|m48|Blood'
+
+  #Get the data for each tmpt.
+  tmpt1=liste_kmeans_results[[x]]$intSites_withKmeans[,c('integrationSite','cluster',
+                                                         'cellCount_corrected','key')]
+  tmpt1$cluster=factor(tmpt1$cluster,levels=unique(tmpt1$cluster)
+                       [order(nchar(unique(tmpt1$cluster)),decreasing=TRUE)])
+
+  tmpt2=liste_kmeans_results[[x_1]]$intSites_withKmeans[,c('integrationSite','cluster',
+                                                           'cellCount_corrected','key')]
+  tmpt2$cluster=factor(tmpt2$cluster,levels=unique(tmpt2$cluster)
+                       [order(nchar(unique(tmpt2$cluster)),decreasing=TRUE)])
+
+  #Split according their status.
+  commun=merge(tmpt1,tmpt2,by='integrationSite')
+  only1=subset(tmpt1,integrationSite%in%setdiff(tmpt1$integrationSite,tmpt2$integrationSite))
+  only2=subset(tmpt2,integrationSite%in%setdiff(tmpt2$integrationSite,tmpt1$integrationSite))
+
+  #Check the values.
+  if (nrow(only1)+nrow(commun)!=nrow(tmpt1)) print('/!\ Problem with the rows 
+                                                   for the tmpt1 /!\ ')
+  if (nrow(only2)+nrow(commun)!=nrow(tmpt2)) print('/!\ Problem with the rows 
+                                                   for the tmpt2 /!\ ')
+
+  #Comparing the cluster among the non-shared IS.
+  tmpt1$indicator=ifelse(tmpt1$integrationSite%in%commun$integrationSite,
+                         'recurrent','non recurrent')
+  tmpt2$indicator=ifelse(tmpt2$integrationSite%in%commun$integrationSite,
+                         'recurrent','non recurrent')
+
+  #TMPT 1.
+  A=as.data.frame(tmpt1 %>% 
+                  group_by(cluster)%>% 
+                  count(indicator) %>% mutate(percent = n/sum(n)))
+  A$tmpt='WAS4 m12'
+
+  #TMPT 2.
+  B=as.data.frame(tmpt2 %>% 
+                  group_by(cluster)%>% 
+                  count(indicator) %>% mutate(percent = n/sum(n)))
+  B$tmpt='WAS4 m48'
+
+  #ALL.
+  E=rbind(A,B)
+  E$cluster=factor(E$cluster,levels=c(fac,'Total'))
+
+  ## Plot
+  ggplot(E)+geom_bar(aes(x=cluster,y=percent,fill=indicator),stat='identity',colour='black')+
+  facet_wrap(~tmpt,scales = 'free_x')+
+  scale_y_continuous(labels = percent_format())+
+  scale_fill_manual(values=c('white','black'))+
+  th_small+theme(legend.position='bottom')+
+  labs(x='',y='IS proportion',fill='')
+
+```
+
+
+#### **Figure 7B : Alluvial diagramm**
+
+```{r Fig7B, echo=FALSE,fig.height=6, fig.width=8,message=FALSE,warning=FALSE}
+
+#Fig 7B - Longitudinal study : alluvial diagramm
+# **** Need to run the chunk 'Fig7A' to have the data ****
+
+  # Get the data
+  a=rbind(tmpt1,tmpt2)
+  commun=merge(tmpt1,tmpt2,by='integrationSite')
+
+  commun_use=a[a$integrationSite%in%commun$integrationSite,]
+  commun_use$Freq=rep(1,nrow(commun_use))
+  commun_use$cluster=factor(commun_use$cluster,levels=fac)
+  commun_use$key=factor(commun_use$key,levels=keys)
+
+  # Alluvial diagram
+   ggplot(commun_use,aes(y =Freq,x=key,stratum=cluster,alluvium=integrationSite))+
+     geom_stratum(aes(fill = cluster),reverse = TRUE) +
+     geom_flow(aes(fill = cluster,alpha=cellCount_corrected/max(cellCount_corrected)))+
+     scale_x_discrete(breaks=levels(commun_use$key),labels=keys_lab[1:2])+
+     th+
+     theme(axis.text=element_text(size=23,family='Arial',colour='black',face='bold'))+
+     scale_fill_manual(values=colors)+labs(fill='',y='IS number',alpha='',x='')+
+     scale_alpha_continuous(range = c(0.5, 1))+
+     guides(fill=guide_legend(title='',override.aes = list(size=10)),alpha=FALSE)
+
+```
+
+
+#### **Figure 7C : longitudinal heatmap** 
+
+```{r Fig7C, echo=FALSE, message=FALSE, warning=FALSE, fig.height=22, fig.width=25, dev='png',dpi=350,out.width='\\textwidth'}
+
+  #Fig 7C - Longitudinal study : heatmap
+
+  ################################################
+  ## Apply the Correction without the threshold ##
+  ################################################
+
+  
+  list_sup0_Corrected=lapply(crossOverReports[all_samples],function(cross){  
+  
+   if(cross$source == 'BoneMarrow') names(cross$table) <- paste0('BM_', names(cross$table))
+    
+    # Subset the intSites_threshold_Initial data to include only sites from a specific 
+    #cell type and time point.
+    i <- which(intSites_new_concat_sup0$key == paste(c(cross$patient,cross$timePoint, cross$source),collapse = "|")) 
+    df <- intSites_new_concat_sup0[i,]
+    
+    #Use the correction function.
+    correction=Correction_2steps_Normalization(x=cross,d2=df)
+    data_corrected_final=correction$data_corrected_final
+
+    # Rename the returned data frame to match the cell types in the intSites data frame.
+    n <- c("integrationSite", "gene", "Bcells_corrected", "Monocytes_corrected",
+           "Granulocytes_corrected","NKcells_corrected", "Tcells_corrected")
+    names(data_corrected_final) <- n
+  
+    intSites_new =dplyr::right_join(df,data_corrected_final,by=c('integrationSite','gene') )
+    intSites_new = mutate(intSites_new,
+                        cellCount_corrected=rowSums(intSites_new[,grepl(names(intSites_new),
+                                                                      pattern='_corrected$')]))
+  
+    # Add proportions.
+    prop = (intSites_new[,grepl("s_corrected",names(intSites_new))])/
+      rowSums((intSites_new[,grepl("_corrected",names(intSites_new))]))
+    names(prop) = c("Bcells_corrected_prop", "Monocytes_corrected_prop",
+                    "Granulocytes_corrected_prop","NKcells_corrected_prop",
+                    "Tcells_corrected_prop")
+    intSites_new = cbind(intSites_new,prop)
+    
+    return(intSites_new)
+
+  } ) 
+
+ # Gather all the data without the threshold and corrected in a unique dataframe.
+ intSites_sup0_corrected=do.call(rbind,list_sup0_Corrected)
+ 
+ ######################
+ 
+ ## Get the longitudinal IS data corresponding to the m48 IS
+ 
+ data = liste_kmeans_results$`WAS4|m48|Blood`$intSites_withKmeans
+ cells = paste0(c('Bcells', 'Monocytes', 'Granulocytes', 'NKcells','Tcells'),'_corrected')
+
+ #Top 15 of main clusters.
+   data1 = data %>% filter(cluster %in% c('GBKT','GM','T'))%>%
+   dplyr::select(integrationSite,gene,inFeature,cluster,key,cellCount_corrected,cells) %>%
+   group_by(cluster) %>% 
+   arrange(cluster, desc(cellCount_corrected)) %>% 
+   filter(row_number()<=15)
+ 
+ top=as.data.frame(data1)
+ 
+ 
+ #Select the data matching the IS for the m12 tmpt.
+ data_prev=list_sup0_Corrected$`WAS4|m12|Blood`
+ data_prev=data_prev %>% dplyr::select(integrationSite,gene,inFeature,cells)
+ 
+ top_alltmpt=left_join(top, data_prev, 
+                       by = c('integrationSite' = 'integrationSite' ,  
+                              'gene'='gene' ,'inFeature' = 'inFeature'))
+ 
+ #Select the data matching the IS for the m36 tmpt.
+ data_prev=list_sup0_Corrected$`WAS4|m36|Blood`
+ data_prev=data_prev %>% dplyr::select(integrationSite,gene,inFeature,cells)
+ 
+ top_alltmpt=left_join(top_alltmpt, data_prev, 
+                       by = c('integrationSite' = 'integrationSite' ,  'gene'='gene' ,'inFeature' = 'inFeature'))
+ 
+
+ #Select the data matching the IS for the m60 tmpt.
+ data_prev=list_sup0_Corrected$`WAS4|m60|Blood`
+ data_prev=data_prev %>% dplyr::select(integrationSite,gene,inFeature,cells)
+ 
+ top_alltmpt=left_join(top_alltmpt, data_prev, 
+                       by = c('integrationSite' = 'integrationSite' ,  'gene'='gene' ,'inFeature' = 'inFeature'))
+ 
+ 
+ colnames(top_alltmpt)<-c('IS','gene','inFeature','cluster','key','cellCount_corrected',
+                          'B48','M48','G48','K48','T48',
+                          'B12','M12','G12','K12','T12',
+                          'B36','M36','G36','K36','T36',
+                          'B60','M60','G60','K60','T60')
+
+ #Get the cluster information to add a color bar.
+  Col=colors[fac]
+  names(Col)<-NULL
+  top_alltmpt$cluster_c=factor(top_alltmpt$cluster,
+                               levels=unique(top_alltmpt$cluster),
+                               labels=colors[unique(top_alltmpt$cluster)])
+  top_alltmpt = arrange(top_alltmpt,cluster_c)
+
+  top_alltmpt$genesymb=ifelse(top_alltmpt$inFeature=='TRUE',paste0(top_alltmpt$gene,'*'),
+                              top_alltmpt$gene)
+  rc <- as.character(top_alltmpt$cluster_c)
+
+ ## Heatmap 
+
+  par(cex.main=2)
+  Colors=rev(brewer.pal(12,"RdBu"))
+  Colors=c(colorRampPalette(Colors)(20))
+
+  data=as.matrix(log10(top_alltmpt[,c(paste0('G',c(12,36,48,60)),
+                                      paste0('M',c(12,36,48,60)),
+                                      paste0('B',c(12,36,48,60)),
+                                      paste0('K',c(12,36,48,60)),
+                                      paste0('T',c(12,36,48,60)))]))
+  row.names(data)<-top_alltmpt$genesymb
+
+  labvec= rep(c(12,36,48,60),5)
+  
+  heatmap.2(data,
+          Colv = NA, Rowv = FALSE, dendrogram="none",trace="none",tracecol="white",
+          col =Colors,
+          na.color="gray70",
+          margins =c(14,16),
+          lmat=rbind(c(5,0,4),c(3,1,2)),
+          lhei=c( 0.25, 1.5),
+          lwid = c(0.25,0.03,1),
+          labCol = labvec,
+          key.title =NA, key.par = list(cex=1.8),key.xlab="Log Abund.", 
+          srtCol=360, adjCol = c(0.5,1),  
+          cexRow = 2.8, cexCol=5,
+          colsep=seq(from=4,to=4*5,by=4),
+          rowsep = c(15,30,45),
+          RowSideColors=rc)
+
+ pos2 <- structure(list(x = c( 0.26,0.856), 
+                        y = c(0.92, 0.92)),
+                       .Names = c("x", "y"))
+ 
+ #Add the cell types in the header.
+  text(x=c(0.20,0.36,0.53,0.67,0.83), y=rep(pos2$y[1],5)  ,
+       cex=3.2,
+       adj = 0,
+       labels=c("Granulocytes","Monocytes","B cells", "NK cells","T cells") )
+
+
+```
+
+
+----------------------------------------------------------------------------------------
+
+### _**Supplemental figures**_
+
+----------------------------------------------------------------------------------------
+
+#### _**Supp. Figure 12 : Kullback classif.**_
+
+```{r SuppFig12 , echo=FALSE, message=FALSE, warning=FALSE, fig.height=20, fig.width=24, dev='png',dpi=350}
+
+  #FigS12 - Kullback classification
+
+
+  ## KULLBACK distance function
+  kl = function(prop1, prop2){
+    sum(prop1 * log(prop1/prop2))
+  }
+
+  ## Get the values
+  celltypes = c('G','M','B','K','T')
+
+  i=0
+  for ( x in samples){
+    i=i+1
+
+    #Get the variables.
+    data=liste_kmeans_results[[x]]$intSites_withKmeans
+    data=data[,c('key','cluster','cellCount_corrected',names(data[,grep('_prop',names(data))]))]
+
+    #Order the columns.
+    data=data[,c(1:3,6,5,4,7,8)]
+
+    #Rename the prop corrected.
+    names(data)=c(names(data)[!grepl(x=names(data),'_prop')],'G','M','B','K','T')
+
+    #Initialisation.
+    compositions = list()
+    initial_comp=prop_norm
+    nom = paste(celltypes,collapse = "")
+    compositions[[nom]] = initial_comp
+
+   #Determine each reference composition (blood,GMBK,...,K,T).
+   for (m in 1:4){
+    aeffacer = combn(1:5,m)
+
+      for (k in 1:ncol(aeffacer)){
+       comp = initial_comp
+        comp[aeffacer[,k]] = initial_comp[aeffacer[,k]]/10
+        comp = comp / sum(comp)
+        nom = paste(celltypes[-aeffacer[,k]],collapse = "")
+        compositions[[nom]] = comp
+      }
+    }
+
+    distances = matrix(ncol=nrow(data),nrow=length(compositions))
+
+    #Apply the distance between the data and the references.
+    colnames(distances) = c(1:nrow(data))
+    for (j in 1:nrow(data)){
+     distances[,j] = unlist(lapply(compositions,kl,data[j,nchar(names(data))<2]))
+    }
+
+    #Get the minimum distance for each site and the corresponding reference.
+    minimuns = names(compositions)[apply(distances,which.min,MARGIN = 2)]
+
+    cells=data[,c('G','M','B','K','T','cellCount_corrected')]
+
+    k=rep(x,length(minimuns))
+    cluster=data$cluster
+    data=cbind(k,minimuns,cluster,cells)
+    assign(paste('dat',i,sep=''),data)
+  }
+
+  Kullback_dis=data.frame(rbind(dat1,dat2,dat3,dat4))
+
+  ## We count the number of letters of each "type" to determine the number of lineages found (1 to 5) [ex: BKT --> 3]
+  lin=nchar(Kullback_dis$minimuns)
+  Kullback_dis=dplyr::mutate(Kullback_dis,lin)
+
+  #Order & name the patients.
+  Kullback_dis$k=factor(Kullback_dis$k,samples,labels=samples_lab_row)
+
+  #Number of IS.
+  nb_IS=aggregate(Kullback_dis$minimuns,list(Kullback_dis$k),length)
+  Kullback=merge(Kullback_dis,nb_IS,by.x=c('k'),by.y=c('Group.1'))
+  Kullback$labs=paste(Kullback$k,'~~~~(',Kullback$x,')', sep='')
+  DAT=Kullback %>%
+      count(k,labs,minimuns,lin) %>%  group_by(labs)  %>% mutate(freq = n / sum(n)) %>% arrange(.,k,-n) %>%
+      mutate(rank=paste0(minimuns,'_',n,'_',labs))
+
+  DAT$rank=factor(DAT$rank,levels=unique(DAT$rank))
+  DAT$labs=factor(DAT$labs,levels=unique(DAT$labs))
+
+  ## Plot
+  ggplot(data=DAT,aes(x=rank,fill=as.factor(lin),y=freq))+
+  geom_bar(alpha=0.80,stat="identity" ,width = 0.7)+
+  facet_wrap(~labs,labeller = label_parsed,scales='free' ,ncol=1)+
+  theme_bw()+labs(x='',y='% of Unique IS')+
+  geom_text(aes(x=rank,y=freq,label=minimuns),size=6.3,fontface='bold',position = position_dodge(0.9),vjust=-0.3)+
+  theme(text=element_text(family='Arial',size=25),
+        axis.text.y=element_text(size=22.5,family='Arial',colour='black'),
+        axis.text.x=element_blank(),
+        legend.title=element_text(size=24),
+        legend.text=element_text(family='Arial',size=22,colour='black'),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor=element_blank(),
+        strip.background=element_rect(fill=NA, color=NA),
+        strip.text=element_text(size=34),legend.position='bottom')+
+  scale_x_discrete(breaks=levels(DAT$rank),labels=gsub('_.*','',levels(DAT$rank)))+
+  scale_y_continuous(labels = scales::percent,limits=c(0,0.2))+
+  guides(fill=guide_legend(title='Nb of lin.',override.aes = list(size=10)))
+
+```
+
+
+#### _**Supp. Figure 13 : Ternary plot - others combinations**_
+
+```{r SuppFig13, echo=FALSE, message=FALSE, warning=FALSE, fig.height=10, fig.width=18,dev='png',dpi=350}
+
+#FigS13 - Kmeans clustering : Ternary plot - others combinations
+
+  ## Get the data
+  plots=list()
+
+   for(p in 1:4) {
+    
+     pat=samples[p]
+  
+     data=liste_kmeans_results[[pat]]$intSites_withKmeans
+     data=data[c('key','cluster','cellCount_corrected',
+         names(liste_kmeans_results[[pat]]$intSites_withKmeans[,
+         grep('_prop',names(liste_kmeans_results[[pat]]$intSites_withKmeans))]))]
+     #Rename the cell types corrected proportions.
+     names(data)=c(names(data)[!grepl(x=names(data),'_prop')],'B','M','G','K','T')
+
+    ## Get the clusters' frequencies
+    tableau = liste_kmeans_results[[pat]]$tableau
+    tableau = tableau[,grepl("transf",names(tableau))==FALSE]
+    tableau= tableau %>% dplyr::group_by(cluster) %>% summarise(clust_size=sum(clust_size))
+    tableau$prop=round(tableau[,'clust_size']/sum(tableau[,'clust_size']),3)*100
+    tableau$clusterprop= paste0(apply(tableau[ , c('cluster','prop') ] , 1 , paste ,
+                                      collapse = "-" ),'%')
+    tableau$cluster=factor(tableau$cluster,levels=fac)
+    tableau=tableau %>% arrange(cluster)
+   
+    data$cluster=factor(data$cluster,levels=tableau$cluster)
+  
+    ## Plot
+    T1=ggtern(data,aes(G+M,K,B+T,group=cluster))+
+      geom_count(aes(color= cluster,alpha=cellCount_corrected))+
+      tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('K')+zlab('BT')+
+      scale_color_manual(labels=tableau$clusterprop,
+                         values = colors[as.character(tableau$cluster)])+
+      scale_size_continuous(breaks = round,range=c(4, 15))+
+      scale_alpha(range=c(0.42,1),breaks=c(1,10,50,100,200,300),guide=FALSE)+
+      guides(color=guide_legend(title='',override.aes = list(size=10),order=1),
+             size=guide_legend(title='IS number'))+
+      theme(legend.text = element_text(family='Arial',size=25,face='bold'),
+            text=element_text(family='Arial',size=28,face='bold'),
+            strip.background=element_rect(fill=NA, color=NA),
+            axis.text=element_text(size=28,family='Arial',colour='black',face='bold'),
+            axis.title=element_text(size=38,family='Arial',colour='black',face='bold'),
+            panel.background =element_rect(fill = "white", colour = "black",size = 0.5, 
+                                           linetype = "solid"),
+            panel.grid.major = element_line(colour = "gray60",size = 0.3),
+            panel.grid.minor = element_line(colour = "gray60",size = 0.1), 
+            panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+            plot.title = element_text(hjust = 0.5,family='Arial',size=35,
+                                      colour = "black",face='bold'),
+            tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+            tern.axis.arrow.text=element_text(size=35,family='Arial',
+                                              colour='black',face='bold'))+
+            theme(legend.position="bottom")
+    
+ #Get the legend  
+  g_legend<-function(a.gplot){
+  tmp <- ggplot_gtable(ggplot_build(a.gplot))
+  leg <- which(sapply(tmp$grobs, function(x) x$name) == "guide-box")
+  legend <- tmp$grobs[[leg]]
+  return(legend)}
+
+  mylegend<-g_legend(T1)
+    
+    T2=ggtern(data,aes(G+M,B,K+T,group=cluster))+
+      geom_count(aes(color= cluster,alpha=cellCount_corrected))+
+      tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('B')+zlab('KT')+
+      scale_color_manual(labels=tableau$clusterprop,
+                         values = colors[as.character(tableau$cluster)])+
+      scale_size_continuous(breaks = round,range=c(4, 15))+
+      scale_alpha(range=c(0.42,1),breaks=c(1,10,50,100,200,300),guide=FALSE)+
+      guides(color=guide_legend(title='',override.aes = list(size=10),order=1),
+             size=guide_legend(title='IS number'))+
+      theme(legend.text = element_text(family='Arial',size=25,face='bold'),
+            text=element_text(family='Arial',size=28,face='bold'),
+            strip.background=element_rect(fill=NA, color=NA),
+            axis.text=element_text(size=28,family='Arial',colour='black',face='bold'),
+            axis.title=element_text(size=38,family='Arial',colour='black',face='bold'),
+            panel.background =element_rect(fill = "white", colour = "black",
+                                           size = 0.5, linetype = "solid"),
+            panel.grid.major = element_line(colour = "gray60",size = 0.3),
+            panel.grid.minor = element_line(colour = "gray60",size = 0.1), 
+            panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+            plot.title = element_text(hjust = 0.5,family='Arial',
+                                      size=35,colour = "black",face='bold'),
+            tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+            tern.axis.arrow.text=element_text(size=35,family='Arial',
+                                              colour='black',face='bold'))
+
+  ## Print all the ternary plots in the same panel.
+    
+    gr=arrangeGrob(T1 + theme(legend.position="none"),
+                   T2 + theme(legend.position="none"),nrow=1)    
+    ggtern::grid.arrange(gr,mylegend,nrow=2,
+                         top =textGrob(samples_lab[p],
+                                       gp=gpar(fontsize=30,fontfamily='Arial',fontface='bold')),
+                         heights=c(1,0.2))
+
+  }
+
+```
+
+
+#### _**Supp. Figure 14 : Centroids**_
+
+```{r SuppFig14, echo=FALSE, message=FALSE, warning=FALSE , fig.height=17, fig.width=22, dev='png',dpi=350}
+
+ #FigS14 - Kmeans clustering : Ternary plot of the centroids
+
+ ##Get the data
+  data=do.call(rbind, lapply(samples, function(s){
+  tableau = liste_kmeans_results[[s]]$tableau
+  tableau = tableau[,grepl("transf",names(tableau))==FALSE]
+  tableau$prop=round(tableau[,'clust_size']/sum(tableau[,'clust_size']),2)*100
+  tableau$R2=paste(round(liste_kmeans_results[[s]]$R2,2)) 
+  tableau
+  }))
+
+ colnames(data)=c('B','M','G','K','T',colnames(data)[6:ncol(data)])
+ data$key=factor(data$key,levels=samples,labels=samples_lab_row)
+ data$cluster=factor(data$cluster,levels=fac)
+
+   ## Ternary plot
+   ggtern(data,aes(G+M,T,B+K,group=cluster))+
+   geom_point(aes(colour=cluster),shape = 1, size = 11, stroke = 3.2)+
+   geom_point(aes(colour=cluster),shape = 16, size = 9.5,alpha=0.7)+
+   tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('T')+zlab('BK')+
+   facet_wrap(~key,nrow=2,labeller = label_parsed)+
+   scale_fill_manual(values = colors)+
+   scale_colour_manual(values = colors)+
+   theme(legend.text = element_text(family='Arial',size=25,face='bold'),
+         text=element_text(family='Arial',size=28,face='bold'),
+         strip.background=element_rect(fill=NA, color=NA),
+         strip.text=element_text(family='Arial',size=40,colour='black',face='bold'),
+         axis.text=element_text(size=28,family='Arial',colour='black',face='bold'),
+         axis.title=element_text(size=40,family='Arial',colour='black',face='bold'),
+         panel.background =element_rect(fill = "white", colour = "black",
+                                        size = 0.5, linetype = "solid"),
+         panel.grid.major = element_line(colour = "gray60",size = 0.3),
+         panel.grid.minor = element_line(colour = "gray60",size = 0.1), 
+         panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+         plot.title = element_text(hjust = 0.5,family='Arial',size=35,
+                                   colour = "black",face='bold'),
+         tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+         tern.axis.arrow.text=element_text(size=35,family='Arial',colour='black',face='bold'))+
+    guides(colour=guide_legend(title=''))
+
+```
+
+
+#### _**Supp. Figure 15 : cell types abundances**_
+
+```{r SuppFig15, echo=FALSE, results='asis', message=FALSE, warning=FALSE, fig.height=5, fig.width=15, dev='png',dpi=350}
+
+#FigS15 - cell types abundance & tests
+
+## Get the data
+G=TC=list()
+
+for (pat in 1:length(samples)){
+  
+  p=samples[pat]
+  
+  data=liste_kmeans_results[[p]]$intSites_withKmeans
+  data$cluster=factor(data$cluster,levels=fac)
+  
+  cells=paste0(c('Granulocytes','Tcells'),'_corrected')
+  
+  Values=lapply(cells, function(C){
+    
+    cat('\n')
+    
+    ## Data
+    plotdata=data %>% dplyr::select(C,key,cluster,integrationSite)
+
+    #Formatting the data to have the nb of IS.
+    nb_IS=aggregate(plotdata$integrationSite,list(plotdata$key,plotdata$cluster),length)
+    data=merge(plotdata,nb_IS,by.x=c('key','cluster'),by.y=c('Group.1','Group.2'))
+    
+    #Order the clusters.
+    data$labs=paste(data$cluster,'\n',data$x, sep='')
+    ord=unique(data$labs[order(data$x,decreasing=T)])
+    data$labs=factor(data$labs,levels=ord)
+    
+    ## Model
+    
+    fit_basic <- glm(get(C) ~ cluster,data=data, 
+                     family=Gamma(link = "identity"))
+    fit_basic_summary=summary(fit_basic)
+    fit_basic_est=fit_basic_summary$coefficients[,1]
+    fit_basic_pval=fit_basic_summary$coefficients[,4]
+    
+    #get the results
+    res=data.frame(estimate=fit_basic_est,pval=fit_basic_pval)
+    res$stars=stars.pval(res$pval)
+    res$cluster=gsub('cluster','',rownames(res))
+    
+    #Put in a table to print
+    res_format=res %>% dplyr::select(cluster,estimate,pval)
+    rownames(res_format)<-NULL
+    table=res_format
+    
+    #Merge the informations
+    dataF=data
+    dataF=merge(dataF,res,all.x = T,by=c('cluster'))
+    dataF$col=as.factor(ifelse(dataF$estimate>0,1,0))
+    
+    return(list('dataF'=dataF,'table'=table))
+  })
+  
+  ## Table to show the tests' results
+  
+  a=samples[pat]
+  a=gsub('\\|Blood','',a)
+  a=gsub('\\|',' ',a)
+  a=gsub('b',"\u03B2",a)
+  
+  table=join(Values[[1]]$table,Values[[2]]$table,by='cluster')
+  table[,2:5]=round(table[,2:5],10)
+  table[table[,3]<2e-16,3]='<2e-16'
+  table[table[,5]<2e-16,5]='<2e-16'
+  
+  #Show the models results.
+  print(kable(table, caption =a,align = "c", digits = 16, escape = FALSE, booktabs=TRUE) %>%
+          add_header_above(header=c(' ' = 1,'Granulocytes'=2,'Tcells'=2)) %>%
+          kable_styling(c("striped", "bordered" ,"condensed")) %>%
+          column_spec(1, bold = T))
+  cat('\n')
+  
+  G[[a]]=Values[[1]]$dataF
+  TC[[a]]=Values[[2]]$dataF
+  
+}
+
+# (A) Granulocytes
+
+data_G=do.call(rbind,G)
+data_G=filter(data_G,key != samples[2])
+data_G$key=factor(data_G$key,levels=samples,labels=samples_lab_row)
+
+
+  box=ggplot(data=data_G)+geom_boxplot(aes(x=labs,y=Granulocytes_corrected))+
+      facet_wrap(~key,labeller = label_parsed,nrow=1,scales = 'free_x')+
+      scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                    labels = trans_format("log10", math_format(10^.x)),
+                    limits=c(1e-4,1e3))+
+      labs(x='',y='Granulocytes abundance (log)')+
+      scale_colour_manual(values=c('steelblue4','firebrick3'))+
+      theme_bw()+
+      theme(text=element_text(family='Arial Bold',size=20),panel.grid.major = element_blank(),
+            strip.background = element_rect(fill="grey99"),strip.text = element_text(size = 20),
+            plot.title = element_text(hjust = 0.5))+guides(colour=FALSE)
+
+  #Add the stars.
+  box= box+geom_text(aes(x=labs,y = 250, label =stars,colour=col),size=14)
+
+  #Add the x-axis colors according the clusters.
+  gt=ggplotGrob(box)
+ 
+  for(i in 8:10){
+  labels=gt$grobs[[i]]$children[[2]]$grobs[[2]]$children[[1]]$label
+  gt$grobs[[i]]$children[[2]]$grobs[[2]]$children[[1]]$gp$col <- colors[gsub('\n.*','',labels)]
+  }
+
+  grid.arrange(gt)
+  
+  
+  
+  # (B) Tcells
+  
+  data_T=do.call(rbind,TC)
+  data_T=filter(data_T,key != samples[3])
+  data_T$key=factor(data_T$key,levels=samples,labels=samples_lab_row)
+  
+  
+    box=ggplot(data=data_T)+geom_boxplot(aes(x=labs,y=Tcells_corrected))+
+    facet_wrap(~key,labeller = label_parsed,nrow=1,scales = 'free_x')+
+    scale_y_log10(breaks = trans_breaks("log10", function(x) 10^x),
+                  labels = trans_format("log10", math_format(10^.x)),
+                  limits=c(1e-4,1e3))+
+    labs(x='',y='Tcells abundance (log)')+
+    scale_colour_manual(values=c('steelblue4','firebrick3'))+
+    theme_bw()+
+    theme(text=element_text(family='Arial Bold',size=20),panel.grid.major = element_blank(),
+          strip.background = element_rect(fill="grey99"),strip.text = element_text(size = 20),
+          plot.title = element_text(hjust = 0.5))+guides(colour=FALSE)
+  
+  #Add the stars.
+  box= box+geom_text(aes(x=labs,y = 250, label =stars,colour=col),size=14)
+  
+  #Add the x-axis colors according the clusters.
+  tt=ggplotGrob(box)
+  
+  for(i in 8:10){
+  labels=tt$grobs[[i]]$children[[2]]$grobs[[2]]$children[[1]]$label
+  tt$grobs[[i]]$children[[2]]$grobs[[2]]$children[[1]]$gp$col <- colors[gsub('\n.*','',labels)]
+  }
+
+  
+  grid.arrange(tt)
+
+```
+
+
+#### _**Supp. Figure 17A : Unique IS number**_
+
+```{r SuppFig17A, echo=FALSE, message=FALSE, warning=FALSE,fig.height=6, fig.width=8, dev='png',dpi=350}
+
+  #FigS17 (A) - Number of highly active IS
+
+  ## Get the data
+  data=intSites_threshold
+  data$cellCount=as.numeric(data$cellCount)
+  high=c()
+
+  for(p in samples_evol) {
+    high[p]=nrow(dplyr::filter(data,key==p))
+  }
+
+  dat=data.frame(high)
+  dat=dplyr::mutate(dat,key=rownames(dat))
+  dat$key=factor(dat$key,levels=keys,labels=keys_lab)
+
+  ## Plot
+  ggplot(dat,aes(x=key,y=high))+
+  geom_bar(stat="identity",size=1,alpha=0.8)+
+  geom_text(aes(label=high),position = position_stack(vjust = 0.5),
+            size = 9,
+            color='white',fontface="bold")+
+  labs(x='',y='Unique IS number')+
+  scale_x_discrete(breaks=levels(dat$key),labels=keys_lab)+
+  th_small+theme(legend.position="bottom")
+
+```
+
+
+#### _**Supp. Figure 17B : % hematopoiesis.**_
+
+```{r SuppFig17B, echo=FALSE, message=FALSE, warning=FALSE,fig.height=6, fig.width=8, dev='png',dpi=350}
+
+#FigS17 (B) - % of hematopoiesis
+
+## Get the data
+  total=high=c()
+
+    for(p in samples_evol) {
+  
+    tot  = dplyr::filter(intSites_new_concat_sup0,key==p)
+    thre = dplyr::filter(intSites_threshold,key==p)
+    
+    total[p]= sum(tot$cellCount)
+    high[p]=sum(thre$cellCount)
+    
+    }
+
+  dat=data.frame(cbind(total,high))
+  dat$prop=dat$high/dat$total
+  dat=dplyr::mutate(dat,key=rownames(dat))
+  dat$key=factor(dat$key,levels=samples_evol)
+
+  ## Plot 
+  ggplot(dat,aes(x=key,y=prop))+
+  geom_bar(stat="identity",size=1,alpha=0.8)+
+  geom_text(aes(label=scales::percent(round(prop,4))),
+            size = 9,
+            color='black',fontface="bold",vjust = -.5)+
+  labs(fill = "",x='',y='% total hematopoiesis')+
+  scale_x_discrete(breaks=levels(dat$key),labels = keys_lab[1:2])+
+  th_small+theme(legend.position="bottom")+
+  scale_y_continuous(limits=c(0,0.8),labels=scales::percent) 
+
+```
+
+
+#### _**Supp. Figure 17C : Ternary plot**_
+
+```{r SuppFig17C, echo=FALSE, message=FALSE, warning=FALSE,fig.height=12, fig.width=12, dev='png',dpi=350}
+
+     #FigS17 (C) - Ternary plot
+
+     ## Get the data
+     pat=samples_evol[1]
+  
+     data=liste_kmeans_results[[pat]]$intSites_withKmeans
+     data=data[c('key','cluster','cellCount_corrected',
+         names(liste_kmeans_results[[pat]]$intSites_withKmeans[,
+         grep('_prop',names(liste_kmeans_results[[pat]]$intSites_withKmeans))]))]
+     #Rename the cell types corrected proportions.
+     names(data)=c(names(data)[!grepl(x=names(data),'_prop')],'B','M','G','K','T')
+
+     ## Get the clusters' frequencies
+     tableau = liste_kmeans_results[[pat]]$tableau
+     tableau = tableau[,grepl("transf",names(tableau))==FALSE]
+     tableau= tableau %>% group_by(cluster) %>% summarise(clust_size=sum(clust_size))
+     tableau$prop=round(tableau[,'clust_size']/sum(tableau[,'clust_size']),3)*100
+     tableau$clusterprop= paste0(apply(tableau[ , c('cluster','prop') ] , 1 , paste ,
+                                      collapse = "-" ),'%')
+     tableau$cluster=factor(tableau$cluster,levels=fac)
+     tableau=tableau %>% arrange(cluster)
+   
+     data$cluster=factor(data$cluster,levels=tableau$cluster)
+
+      ## Plot
+      ggtern(data,aes(G+M,T,B+K))+
+      geom_count(aes(color= cluster,alpha=cellCount_corrected))+
+      tern_limit(1.1,1.1,1.1) +xlab('GM')+ylab('T')+zlab('BK')+
+      labs(title=samples_lab_row[p])+
+      scale_color_manual(labels=tableau$clusterprop,
+                         values = colors[as.character(tableau$cluster)])+
+      scale_size_continuous(breaks = round,range=c(4, 15))+
+      scale_alpha(range=c(0.42,1),breaks=c(1,10,50,100,200,300),guide=FALSE)+
+      guides(color=guide_legend(title='',override.aes = list(size=10),order=1),
+             size=guide_legend(title='IS number'))+
+      theme(legend.text = element_text(family='Arial',size=25,face='bold'),
+            text=element_text(family='Arial',size=28,face='bold'),
+            strip.background=element_rect(fill=NA, color=NA),
+            axis.text=element_text(size=28,family='Arial',colour='black',face='bold'),
+            axis.title=element_text(size=40,family='Arial',colour='black',face='bold'),
+            panel.background =element_rect(fill = "white", colour = "black",
+                                           size = 0.5, linetype = "solid"),
+            panel.grid.major = element_line(colour = "gray60",size = 0.3),
+            panel.grid.minor = element_line(colour = "gray60",size = 0.1), 
+            panel.border = element_rect(colour = "black", size = 0.5,linetype = 1),
+            plot.title = element_text(hjust = 0.5,family='Arial',size=35,
+                                      colour = "black",face='bold'),
+            tern.axis.arrow.show=TRUE, tern.axis.arrow=element_line(size=6),
+            tern.axis.arrow.text=element_text(size=35,family='Arial',colour='black',face='bold'))
+
+```
+
+
+#### _**Supp. Figure 17D: Heatmap**_ 
+
+```{r SuppFig17D, echo=FALSE, message=FALSE, warning=FALSE, fig.height=7, fig.width=7, dev='png',dpi=350,out.height='80%',out.width='80%'}
+  
+  #FigS17 (D) - Heatmap of clustering repartition between m12 and m48
+  # **** Need to run the chunk 'FigS7A' to have the data ****
+
+  ## Get the data
+  values=data.frame(table(commun$cluster.x,commun$cluster.y))
+  names(values)=c(names(values)[1:2],'effectif')
+  DF=data.frame(round(prop.table(table(commun$cluster.x,commun$cluster.y),1),3))
+
+  tot=merge(values,DF,by=c('Var1','Var2'))
+
+  #Replace the 0 by NAs to put them in grey.
+  tot$Freq= replace(tot$Freq, tot$Freq<1e-5, NA)
+
+  #If the value is 0, put no label.
+  val_text=ifelse(tot$Freq>1e-5,paste(tot$Freq*100,'%'),'')
+ 
+  ## Heatmap
+  print(ggplot(tot)+geom_tile(aes(x=Var2,y=Var1,fill=Freq*100),colour='white',alpha=0.9)+
+  geom_text(aes(x=Var2,y=Var1,label=val_text),cex=6,fontface='bold')+
+  geom_label(aes(x=Var2,y=Var1,label=effectif,fill=Freq*100),cex=4.2,nudge_x=-0.3,nudge_y = 0.3)+
+  scale_fill_distiller(palette = "Spectral")+th+
+  labs(x='m24',y='m12',fill='% in row')+
+  theme(legend.position="bottom",legend.text=element_text(size=18)))
+
+```
+
