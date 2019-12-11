@@ -8,21 +8,21 @@ of human hematopoietic differentiation programs”, by Six E et al.
 ## IS dataframes ##
 Final integration sites dataframe can be found in data/intSites.mergedSamples.collapsed.csv.gz
 
-The IS dataframe containing technical replicates can be found in data/intSites.noMergedSamples.csv.gz
+The IS dataframe containing technical replicates data can be found in data/intSites.noMergedSamples.csv.gz
 
-The IS dataframe containing biological replicates can be found in data/intSites.nomergedSamples.collapsed.csv.gz
+The IS dataframe containing biological replicates data can be found in data/intSites.nomergedSamples.collapsed.csv.gz
 
 All sequence data used in this study is available at the NCBI SRA under SRP139090.
 
 ## Samples Metadata ##
-Cell contamination matrix, VCN and DNA input  for each patient timepoint can be found in data/crossOverReports.tsv
+For each patient and time point the cell contamination matrix, VCN input and DNA input can be found in data/crossOverReports.tsv
 
 ## Clonal Tracking pipeline ##
 The IS data are corrected and normalized using the function R/AbundanceCorrection_2steps_Normalization_Steps.R
 
 To analyze HSPC lineage output, the corrected data are clustered using the function R/Kmeans_clustering.R
 
-## Simulation algorithm ##
+## Clonal Tracking modelling algorithm ##
 The function allowing to run the simulation algorithm can be found in R/Modelling/Data_generator.R
 
 It has been used to model two distinct types of HSPC population
